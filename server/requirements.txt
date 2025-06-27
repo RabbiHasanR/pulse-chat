@@ -1,0 +1,7 @@
+Django==5.2.3
+psycopg2==2.9.10
+djangorestframework 3.16.0
+celery==5.5.3
+redis==6.2.0
+channels==4.2.2
+channels-redis==4.2.1

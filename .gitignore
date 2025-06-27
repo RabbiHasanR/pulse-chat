@@ -1,0 +1,25 @@
+# Ignore environment variable files
+.env
+
+server/env/
+
+
+# Ignore Docker-related artifacts
+*.log
+*.pid
+*.sock
+
+# Ignore OS/system junk
+.DS_Store
+Thumbs.db
+
+# Ignore IDE/editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+
+# Ignore backup files
+*~
+*.orig
