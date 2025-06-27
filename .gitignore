@@ -4,6 +4,7 @@
 server/env/
 
 
+git-commit-format.txt
 # Ignore Docker-related artifacts
 *.log
 *.pid
