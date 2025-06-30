@@ -4,6 +4,7 @@
 server/env/
 
 
+
 git-commit-format.txt
 # Ignore Docker-related artifacts
 *.log
@@ -24,3 +25,13 @@ Thumbs.db
 # Ignore backup files
 *~
 *.orig
+
+
+# Ignore all migration folders
+server/**/migrations/
+
+# Ignore compiled python files and pycache
+server/**/__pycache__/
+server/**/*.pyc
+server/**/*.pyo
+server/**/*.pyd
