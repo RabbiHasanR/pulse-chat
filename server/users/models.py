@@ -2,7 +2,7 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 
 
-class User(AbstractUser):
+class ChatUser(AbstractUser):
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=150)
     is_admin = models.BooleanField(default=False)

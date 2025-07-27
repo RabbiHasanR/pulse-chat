@@ -6,9 +6,13 @@ def get_client_signature(request):
     return hash(f'{ip}-{ua}')
 
 def issue_token_for_user(user, request):
-    token = RefreshToken.for_user(user)
-    token['client_hash'] = str(get_client_signature(request))
-    return token
+    refresh = RefreshToken.for_user(user)
+    client_hash = str(get_client_signature(request))
+
+    refresh['client_hash'] = client_hash
+    refresh.access_token['client_hash'] = client_hash
+
+    return refresh
 
 def verify_token_signature(token, request):
     try:

@@ -29,6 +29,9 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 
+
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -41,7 +44,12 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
+    
+    'users',
 ]
+
+AUTH_USER_MODEL = 'users.ChatUser'
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -168,6 +176,27 @@ REST_FRAMEWORK = {
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    
+    # 🔒 Use stronger algorithm and separate signing key
+    "ALGORITHM": "HS512",
+    "SIGNING_KEY": SECRET_KEY,
+    "VERIFYING_KEY": None,  # Use for RS algorithms if needed
+
+    # 🕒 Leeway for time sync discrepancies
+    "LEEWAY": 30,
+
+    # 🛡️ Header types and supported tokens
     "AUTH_HEADER_TYPES": ("Bearer",),
     "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
+    
+    # 🔁 Token rotation and blacklisting
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+
+    # 📱 Sliding token support (optional for rolling expiry)
+    "SLIDING_TOKEN_LIFETIME": timedelta(minutes=30),
+    "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(days=7),
+
+    # 🛠️ Additional security features
+    "UPDATE_LAST_LOGIN": True,
 }

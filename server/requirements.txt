@@ -1,5 +1,5 @@
 Django==5.2.3
-# psycopg2==2.9.10  # for production use
+psycopg2==2.9.10  # for production use
 # psycopg2-binary==2.9.10  # for development use
 djangorestframework==3.16.0
 celery==5.5.3

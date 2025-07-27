@@ -1,6 +1,6 @@
 from django.http import JsonResponse
 from rest_framework_simplejwt.tokens import AccessToken
-from utils.jwt_util import get_client_signature
+from utils.jwt_util import verify_token_signature
 
 class JWTClientBindingMiddleware:
     def __init__(self, get_response):
@@ -12,7 +12,7 @@ class JWTClientBindingMiddleware:
             token = auth.split(' ')[1]
             try:
                 decoded = AccessToken(token)
-                if get_client_signature(decoded, request):
+                if not verify_token_signature(decoded, request):
                     return JsonResponse({"detail": "Client mismatch"}, status=403)
             except Exception:
                 return JsonResponse({"detail": "Invalid token"}, status=401)

@@ -5,6 +5,10 @@ until nc -z $DATABASE_HOST $DATABASE_PORT; do
   sleep 1
 done
 
+python manage.py makemigrations users
+python manage.py migrate users
+
+python manage.py makemigrations
 python manage.py migrate --noinput
 
 exec "$@"
