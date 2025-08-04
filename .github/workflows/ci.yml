@@ -95,6 +95,9 @@ jobs:
         run: |
           python manage.py makemigrations
           python manage.py migrate --noinput
+      
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$PYTHONPATH:./server" >> $GITHUB_ENV
 
       - name: Run tests
         run: pytest
