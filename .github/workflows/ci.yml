@@ -1,4 +1,4 @@
-name: Django CI
+name: Django Pulse Chat CI
 
 on:
   push:
@@ -27,7 +27,7 @@ jobs:
           pip install ruff
 
       - name: Run Ruff
-        run: ruff .
+        run: ruff check .
 
   test:
     name: Test Suite
@@ -85,6 +85,11 @@ jobs:
             echo "Waiting for database..."
             sleep 1
           done
+
+      - name: Run users migrations
+        run: |
+          python manage.py makemigrations users
+          python manage.py migrate users
 
       - name: Run migrations
         run: |
