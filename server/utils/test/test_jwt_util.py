@@ -32,17 +32,20 @@ def test_get_client_signature_missing_meta_fields():
     sig = get_client_signature(request)
     assert isinstance(sig, int)
 
+@pytest.mark.django_db
 def test_issue_token_contains_client_hash(mock_user, mock_request):
     token = issue_token_for_user(mock_user, mock_request)
     expected_hash = str(get_client_signature(mock_request))
 
     assert token['client_hash'] == expected_hash
     assert token.access_token['client_hash'] == expected_hash
-
+    
+@pytest.mark.django_db
 def test_verify_token_signature_valid(mock_user, mock_request):
     token = issue_token_for_user(mock_user, mock_request)
     assert verify_token_signature(token, mock_request) is True
-
+    
+@pytest.mark.django_db
 def test_verify_token_signature_mismatch(mock_user, mock_request):
     token = issue_token_for_user(mock_user, mock_request)
 
