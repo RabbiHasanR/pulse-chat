@@ -1,6 +1,6 @@
 import pytest
 import jwt
-from auth_util import generate_otp, generate_email_token
+from ..auth_util import generate_otp, generate_email_token
 from django.conf import settings
 
 def test_generate_otp_format_and_length():
