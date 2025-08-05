@@ -153,4 +153,4 @@ def test_refresh_token_blacklisted():
     client = APIClient()
     response = client.post(REFRESH_URL, {"refresh": str(token)})
     assert response.status_code == 401
-    assert response.data["error"] == "Token is blacklisted"
+    assert response.data["error"] == "Invalid token"

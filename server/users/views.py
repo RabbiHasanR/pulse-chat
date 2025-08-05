@@ -87,10 +87,6 @@ class CustomTokenRefreshView(APIView):
                 return Response({"detail": "Client mismatch"}, status=403)
             
             refresh.verify()
-            
-            jti = refresh.get("jti")
-            if BlacklistedToken.objects.filter(token__jti=jti).exists():
-                return Response({"error": "Token is blacklisted"}, status=status.HTTP_401_UNAUTHORIZED)
 
             user_id = refresh.get("user_id")
             user = ChatUser.objects.get(id=user_id)
