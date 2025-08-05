@@ -4,7 +4,7 @@ from django.conf import settings
 from django.core.cache import cache
 
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from users.models import ChatUser
 from utils.auth_util import generate_email_token
@@ -108,7 +108,7 @@ def test_refresh_token_success():
         password=DUMMY_PASSWORD
     )
     token = issue_token_for_user(user, MockRequest())
-
+    print("test_refresh_token_success:", token)
     client = APIClient()
     response = client.post(REFRESH_URL, {"refresh": str(token)})
     assert response.status_code == 200
@@ -147,7 +147,15 @@ def test_refresh_token_blacklisted():
         password=DUMMY_PASSWORD
     )
     token = issue_token_for_user(user, MockRequest())
-    BlacklistedToken.objects.create(token=token)
+    outstanding = OutstandingToken.objects.create(
+        user=user,
+        jti=token["jti"],
+        token=str(token),
+        created_at=token["iat"],
+        expires_at=token["exp"]
+    )
+
+    BlacklistedToken.objects.create(token=outstanding)
 
     client = APIClient()
     response = client.post(REFRESH_URL, {"refresh": str(token)})
