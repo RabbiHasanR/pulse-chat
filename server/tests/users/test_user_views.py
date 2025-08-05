@@ -100,15 +100,14 @@ class MockRequest:
         self.ua = ua
 
 @pytest.mark.django_db
-def test_refresh_token_success():
+def test_refresh_token_success(mock_request):
     user = ChatUser.objects.create_user(
         email=DUMMY_EMAIL,
         username="refresher",
         full_name=DUMMY_NAME,
         password=DUMMY_PASSWORD
     )
-    token = issue_token_for_user(user, MockRequest())
-    print("test_refresh_token_success:", token)
+    token = issue_token_for_user(user, mock_request)
     client = APIClient()
     response = client.post(REFRESH_URL, {"refresh": str(token)})
     assert response.status_code == 200
