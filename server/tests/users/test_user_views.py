@@ -1,5 +1,6 @@
 import jwt
 import pytest
+from datetime import datetime
 from django.conf import settings
 from django.core.cache import cache
 
@@ -100,16 +101,17 @@ class MockRequest:
         self.ua = ua
 
 @pytest.mark.django_db
-def test_refresh_token_success(mock_request):
+def test_refresh_token_success():
     user = ChatUser.objects.create_user(
         email=DUMMY_EMAIL,
         username="refresher",
         full_name=DUMMY_NAME,
         password=DUMMY_PASSWORD
     )
+    mock_request = MockRequest()
     token = issue_token_for_user(user, mock_request)
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)})
+    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=mock_request.ip, HTTP_USER_AGENT=mock_request.ua)
     assert response.status_code == 200
     assert "access" in response.data
     assert "refresh" in response.data
@@ -150,8 +152,8 @@ def test_refresh_token_blacklisted():
         user=user,
         jti=token["jti"],
         token=str(token),
-        created_at=token["iat"],
-        expires_at=token["exp"]
+        created_at=datetime.fromtimestamp(token["iat"]),
+        expires_at=datetime.fromtimestamp(token["exp"])
     )
 
     BlacklistedToken.objects.create(token=outstanding)

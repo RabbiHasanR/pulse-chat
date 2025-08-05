@@ -11,7 +11,6 @@ def issue_token_for_user(user, request):
 
     refresh['client_hash'] = client_hash
     refresh.access_token['client_hash'] = client_hash
-
     return refresh
 
 def verify_token_signature(token, request):

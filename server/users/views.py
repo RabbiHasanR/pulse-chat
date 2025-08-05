@@ -41,6 +41,7 @@ class SendOTPView(APIView):
 
             return Response({
                 "message": "OTP sent",
+                "otp": otp,
                 "token": email_token
             }, status=200)
         except ChatUser.DoesNotExist:
@@ -82,7 +83,6 @@ class CustomTokenRefreshView(APIView):
 
         try:
             refresh = RefreshToken(token_str)
-
             if not verify_token_signature(refresh, request):
                 return Response({"detail": "Client mismatch"}, status=403)
             

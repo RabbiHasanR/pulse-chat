@@ -14,5 +14,5 @@ urlpatterns = [
 
     path("verify-otp/", VerifyOTPView.as_view(), name="verify-otp"),
 
-    path("token/refresh/", CustomTokenRefreshView.as_view(), name="token-refresh"),
+    path("refresh-token/", CustomTokenRefreshView.as_view(), name="token-refresh"),
 ]
