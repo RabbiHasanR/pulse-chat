@@ -31,7 +31,7 @@ class SendOTPView(APIView):
     def post(self, request):
         email = request.data.get('email')
         try:
-            user = ChatUser.objects.get(email=email)
+            user = ChatUser.objects.get(email=email) # noqa
             otp = generate_otp()
             cache.set(f"otp_{email}", otp, timeout=300)  # 5 min
 
@@ -103,7 +103,7 @@ class CustomTokenRefreshView(APIView):
 
         except InvalidToken:
             return Response({"error": "Invalid or expired refresh token"}, status=401)
-        except TokenError as e:
+        except TokenError as e: # noqa
             return Response({"error": "Invalid token"}, status=401)
         except ChatUser.DoesNotExist:
             return Response({"error": "User not found"}, status=404)
