@@ -12,7 +12,7 @@ from utils.auth_util import generate_email_token
 from utils.jwt_util import (
     issue_token_for_user,
 )
-from tests.constants import *
+from tests.constants import * # noqa
 
 # RegisterUserView Test Cases
 
@@ -24,15 +24,15 @@ def test_register_user_success():
         "username": DUMMY_USERNAME,
         "full_name": DUMMY_NAME,
         "password": DUMMY_PASSWORD,
-    }
-    response = client.post(REGISTER_URL, data)
+    } # noqa
+    response = client.post(REGISTER_URL, data) # noqa
     assert response.status_code == 201
     assert response.data["message"] == "User registered"
 
 @pytest.mark.django_db
 def test_register_user_invalid_data():
     client = APIClient()
-    response = client.post(REGISTER_URL, {"email": "invalid"})
+    response = client.post(REGISTER_URL, {"email": "invalid"}) # noqa
     assert response.status_code == 400
     assert "username" in response.data
     assert "full_name" in response.data
@@ -43,7 +43,7 @@ def test_register_user_invalid_data():
 @pytest.mark.django_db
 def test_send_otp_success(user):
     client = APIClient()
-    response = client.post(SEND_OTP_URL, {"email": user.email})
+    response = client.post(SEND_OTP_URL, {"email": user.email}) # noqa
     assert response.status_code == 200
     assert "token" in response.data
     assert cache.get(f"otp_{user.email}") is not None
@@ -51,7 +51,7 @@ def test_send_otp_success(user):
 @pytest.mark.django_db
 def test_send_otp_user_not_found():
     client = APIClient()
-    response = client.post(SEND_OTP_URL, {"email": "notfound@example.com"})
+    response = client.post(SEND_OTP_URL, {"email": "notfound@example.com"}) # noqa
     assert response.status_code == 404
     assert response.data["error"] == "User not found"
     
@@ -62,7 +62,7 @@ def test_send_otp_user_not_found():
 def test_verify_otp_success(user, otp, cache_otp):
     token = generate_email_token(user.email)
     client = APIClient()
-    response = client.post(VERIFY_OTP_URL, {"token": token, "otp": otp})
+    response = client.post(VERIFY_OTP_URL, {"token": token, "otp": otp}) # noqa
     assert response.status_code == 200
     assert "access" in response.data
     assert "refresh" in response.data
@@ -71,7 +71,7 @@ def test_verify_otp_success(user, otp, cache_otp):
 def test_verify_otp_invalid_otp(user, otp, cache_otp):
     token = generate_email_token(user.email)
     client = APIClient()
-    response = client.post(VERIFY_OTP_URL, {"token": token, "otp": "000000"})
+    response = client.post(VERIFY_OTP_URL, {"token": token, "otp": "000000"}) # noqa
     assert response.status_code == 400
     assert response.data["error"] == "Invalid OTP"
 
@@ -81,9 +81,9 @@ def test_verify_otp_expired_token():
         {"email": DUMMY_EMAIL, "exp": 0},
         settings.SECRET_KEY,
         algorithm="HS256"
-    )
+    ) # noqa
     client = APIClient()
-    response = client.post(VERIFY_OTP_URL, {"token": expired_token, "otp": "123456"})
+    response = client.post(VERIFY_OTP_URL, {"token": expired_token, "otp": "123456"}) # noqa
     assert response.status_code == 401
     assert response.data["error"] == "Token expired"
 
@@ -107,11 +107,11 @@ def test_refresh_token_success():
         username="refresher",
         full_name=DUMMY_NAME,
         password=DUMMY_PASSWORD
-    )
+    ) # noqa
     mock_request = MockRequest()
     token = issue_token_for_user(user, mock_request)
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=mock_request.ip, HTTP_USER_AGENT=mock_request.ua)
+    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=mock_request.ip, HTTP_USER_AGENT=mock_request.ua) # noqa
     assert response.status_code == 200
     assert "access" in response.data
     assert "refresh" in response.data
@@ -119,7 +119,7 @@ def test_refresh_token_success():
 @pytest.mark.django_db
 def test_refresh_token_missing():
     client = APIClient()
-    response = client.post(REFRESH_URL, {})
+    response = client.post(REFRESH_URL, {}) # noqa
     assert response.status_code == 400
     assert response.data["error"] == "Missing refresh token"
 
@@ -130,12 +130,12 @@ def test_refresh_token_client_mismatch():
         username="mismatch",
         full_name=DUMMY_NAME,
         password=DUMMY_PASSWORD
-    )
+    ) # noqa
     token = issue_token_for_user(user, MockRequest("192.168.1.1", "UA"))
     altered_request = MockRequest("10.0.0.1", "UA")
 
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=altered_request.ip, HTTP_USER_AGENT=altered_request.ua)
+    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=altered_request.ip, HTTP_USER_AGENT=altered_request.ua) # noqa
     assert response.status_code == 403
     assert response.data["detail"] == "Client mismatch"
 
@@ -146,7 +146,7 @@ def test_refresh_token_blacklisted():
         username="black",
         full_name=DUMMY_NAME,
         password=DUMMY_PASSWORD
-    )
+    ) # noqa
     token = issue_token_for_user(user, MockRequest())
     outstanding = OutstandingToken.objects.create(
         user=user,
@@ -159,6 +159,6 @@ def test_refresh_token_blacklisted():
     BlacklistedToken.objects.create(token=outstanding)
 
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)})
+    response = client.post(REFRESH_URL, {"refresh": str(token)}) # noqa
     assert response.status_code == 401
     assert response.data["error"] == "Token is blacklisted"
