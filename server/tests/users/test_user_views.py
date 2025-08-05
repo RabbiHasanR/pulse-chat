@@ -6,7 +6,7 @@ from django.core.cache import cache
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 
-from .models import ChatUser
+from users.models import ChatUser
 from utils.auth_util import generate_email_token
 from utils.jwt_util import (
     issue_token_for_user,

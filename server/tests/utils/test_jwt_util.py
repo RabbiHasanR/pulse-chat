@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock
 from rest_framework_simplejwt.tokens import RefreshToken
-from ..jwt_util import (
+from utils.jwt_util import (
     get_client_signature,
     issue_token_for_user,
     verify_token_signature
