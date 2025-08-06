@@ -64,8 +64,8 @@ def mock_request():
             'REMOTE_ADDR': ip,
             'HTTP_USER_AGENT': ua
         }
-        request.ip = ip
-        request.ua = ua
+        # request.ip = ip
+        # request.ua = ua
         return request
     return _make
 

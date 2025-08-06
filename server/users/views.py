@@ -139,7 +139,7 @@ class CustomTokenRefreshView(APIView):
             )
         except TokenError:
             return error_response(
-                message="Token error",
+                message="Invalid token",
                 errors={"refresh": ["Token verification failed"]},
                 status=401
             )

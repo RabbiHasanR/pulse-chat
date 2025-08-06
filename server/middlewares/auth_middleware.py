@@ -1,6 +1,7 @@
-from django.http import JsonResponse
+from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import AccessToken
 from utils.jwt_util import verify_token_signature
+from utils.response import error_response  # ✅ import your error wrapper
 
 class JWTClientBindingMiddleware:
     def __init__(self, get_response):
@@ -13,7 +14,15 @@ class JWTClientBindingMiddleware:
             try:
                 decoded = AccessToken(token)
                 if not verify_token_signature(decoded, request):
-                    return JsonResponse({"detail": "Client mismatch"}, status=403)
+                    return error_response(
+                        message="Client mismatch",
+                        errors={"token": ["Token does not match client signature"]},
+                        status=403
+                    )
             except Exception:
-                return JsonResponse({"detail": "Invalid token"}, status=401)
+                return error_response(
+                    message="Invalid token",
+                    errors={"token": ["Token is invalid or malformed"]},
+                    status=401
+                )
         return self.get_response(request)

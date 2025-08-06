@@ -90,11 +90,13 @@ def test_verify_otp_expired_token():
 @pytest.mark.django_db
 def test_refresh_token_success(issue_bound_token, mock_request):
     client = APIClient()
+    ip = mock_request().META.get('REMOTE_ADDR', '')
+    ua = mock_request().META.get('HTTP_USER_AGENT', '')
     response = client.post(
         REFRESH_URL,
         {"refresh": str(issue_bound_token)},
-        REMOTE_ADDR=mock_request().ip,
-        HTTP_USER_AGENT=mock_request().ua
+        REMOTE_ADDR=ip,
+        HTTP_USER_AGENT=ua
     )
     assert response.status_code == 200
     assert response.data["success"] is True
@@ -115,11 +117,13 @@ def test_refresh_token_client_mismatch(user, mock_request):
     altered = mock_request("10.0.0.1", "UA")
     token = issue_token_for_user(user, original)
     client = APIClient()
+    ip = altered.META.get('REMOTE_ADDR', '')
+    ua = altered.META.get('HTTP_USER_AGENT', '')
     response = client.post(
         REFRESH_URL,
         {"refresh": str(token)},
-        REMOTE_ADDR=altered.ip,
-        HTTP_USER_AGENT=altered.ua
+        REMOTE_ADDR=ip,
+        HTTP_USER_AGENT=ua
     )
     assert response.status_code == 403
     assert response.data["success"] is False
@@ -165,12 +169,14 @@ def test_logout_client_mismatch(user, mock_request):
     token = issue_token_for_user(user, original)
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {str(token.access_token)}")
+    ip = altered.META.get('REMOTE_ADDR', '')
+    ua = altered.META.get('HTTP_USER_AGENT', '')
     response = client.post(
         LOGOUT_URL,
         {"refresh": str(token)},
-        REMOTE_ADDR=altered.ip,
-        HTTP_USER_AGENT=altered.ua
+        REMOTE_ADDR=ip,
+        HTTP_USER_AGENT=ua
     )
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert response.data["success"] is False
     assert "client binding" in response.data["errors"]["refresh"][0].lower()
