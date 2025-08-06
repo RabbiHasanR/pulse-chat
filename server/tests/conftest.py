@@ -77,8 +77,8 @@ def auth_client(issue_bound_token, mock_request):
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {str(issue_bound_token.access_token)}")
     client.defaults.update({
-        "REMOTE_ADDR": mock_request().ip,
-        "HTTP_USER_AGENT": mock_request().ua
+        "REMOTE_ADDR": mock_request().META.get('REMOTE_ADDR', ''),
+        "HTTP_USER_AGENT": mock_request().META.get('HTTP_USER_AGENT', '')
     })
     return client
 
