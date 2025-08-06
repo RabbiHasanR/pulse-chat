@@ -54,11 +54,13 @@ AUTH_USER_MODEL = 'users.ChatUser'
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'middlewares.auth_middleware.JWTClientBindingMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -170,7 +172,8 @@ CELERY_TASK_SERIALIZER = 'json'
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ]
+    ],
+    "EXCEPTION_HANDLER": "middlewares.exception_handler.custom_exception_handler"
 }
 
 SIMPLE_JWT = {

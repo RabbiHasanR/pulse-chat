@@ -2,36 +2,40 @@ import jwt
 from django.conf import settings
 from django.core.cache import cache
 
-from rest_framework import status
 from rest_framework.views import APIView
-from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
-from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
-
 
 from .models import ChatUser
 from .serializers import UserRegistrationSerializer
+from utils.response import success_response, error_response
 from utils.auth_util import generate_otp, generate_email_token
 from utils.jwt_util import issue_token_for_user, verify_token_signature
-
 
 
 class RegisterUserView(APIView):
     def post(self, request):
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
-            return Response({"message": "User registered"}, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+            user = serializer.save()
+            return success_response(
+                message="User registered",
+                data={"id": user.id, "email": user.email},
+                status=201
+            )
+        return error_response(
+            message="Validation failed",
+            errors=serializer.errors,
+            status=400
+        )
 
 
 class SendOTPView(APIView):
     def post(self, request):
         email = request.data.get('email')
         try:
-            user = ChatUser.objects.get(email=email) # noqa
+            user = ChatUser.objects.get(email=email)  # noqa
             otp = generate_otp()
             cache.set(f"otp_{email}", otp, timeout=300)  # 5 min
 
@@ -39,14 +43,17 @@ class SendOTPView(APIView):
 
             # send_otp_email(email, otp)  # Could be Celery task
 
-            return Response({
-                "message": "OTP sent",
-                "otp": otp,
-                "token": email_token
-            }, status=200)
+            return success_response(
+                message="OTP sent",
+                data={"otp": otp, "token": email_token},
+                status=200
+            )
         except ChatUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=404)
-
+            return error_response(
+                message="User not found",
+                errors={"email": ["No user found with this email"]},
+                status=404
+            )
 
 
 class VerifyOTPView(APIView):
@@ -58,48 +65,117 @@ class VerifyOTPView(APIView):
             payload = jwt.decode(email_token, settings.SECRET_KEY, algorithms=['HS256'])
             email = payload.get('email')
         except jwt.ExpiredSignatureError:
-            return Response({"error": "Token expired"}, status=401)
+            return error_response(
+                message="Token expired",
+                errors={"token": ["Email token has expired"]},
+                status=401
+            )
         except jwt.InvalidTokenError:
-            return Response({"error": "Invalid token"}, status=400)
+            return error_response(
+                message="Invalid token",
+                errors={"token": ["Email token is invalid"]},
+                status=400
+            )
 
         cached_otp = cache.get(f"otp_{email}")
         if cached_otp != otp:
-            return Response({"error": "Invalid OTP"}, status=400)
+            return error_response(
+                message="Invalid OTP",
+                errors={"otp": ["OTP does not match"]},
+                status=400
+            )
 
         user = ChatUser.objects.get(email=email)
         refresh = issue_token_for_user(user, request)
-        return Response({
-            "access": str(refresh.access_token),
-            "refresh": str(refresh)
-        }, status=200)
-        
+        return success_response(
+            message="OTP verified",
+            data={
+                "access": str(refresh.access_token),
+                "refresh": str(refresh)
+            },
+            status=200
+        )
 
 
 class CustomTokenRefreshView(APIView):
     def post(self, request):
         token_str = request.data.get("refresh")
         if not token_str:
-            return Response({"error": "Missing refresh token"}, status=400)
+            return error_response(
+                message="Missing refresh token",
+                errors={"refresh": ["This field is required"]},
+                status=400
+            )
 
         try:
             refresh = RefreshToken(token_str)
             if not verify_token_signature(refresh, request):
-                return Response({"detail": "Client mismatch"}, status=403)
-            
+                return error_response(
+                    message="Client mismatch",
+                    errors={"token": ["Token does not match client signature"]},
+                    status=403
+                )
+
             refresh.verify()
 
             user_id = refresh.get("user_id")
             user = ChatUser.objects.get(id=user_id)
             new_token = issue_token_for_user(user, request)
 
-            return Response({
-                "access": str(new_token.access_token),
-                "refresh": str(new_token),
-            }, status=200)
+            return success_response(
+                message="Token refreshed",
+                data={
+                    "access": str(new_token.access_token),
+                    "refresh": str(new_token)
+                },
+                status=200
+            )
 
         except InvalidToken:
-            return Response({"error": "Invalid or expired refresh token"}, status=401)
-        except TokenError as e: # noqa
-            return Response({"error": "Invalid token"}, status=401)
+            return error_response(
+                message="Invalid or expired refresh token",
+                errors={"refresh": ["Token is invalid or expired"]},
+                status=401
+            )
+        except TokenError:
+            return error_response(
+                message="Token error",
+                errors={"refresh": ["Token verification failed"]},
+                status=401
+            )
         except ChatUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=404)
+            return error_response(
+                message="User not found",
+                errors={"user": ["No user found for this token"]},
+                status=404
+            )
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+        if not refresh_token:
+            return error_response(
+                message="Missing refresh token",
+                errors={"refresh": ["This field is required"]},
+                status=400
+            )
+
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+
+            return success_response(
+                message="Logout successful",
+                data=None,
+                status=200
+            )
+
+        except (TokenError, InvalidToken):
+            return error_response(
+                message="Invalid or expired token",
+                errors={"refresh": ["Token is invalid"]},
+                status=401
+            )
