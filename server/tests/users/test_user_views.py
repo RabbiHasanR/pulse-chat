@@ -1,32 +1,26 @@
-import jwt
 import pytest
-from datetime import datetime
+import jwt
 from django.conf import settings
 from django.core.cache import cache
-
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
-
-from users.models import ChatUser
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+from tests.constants import *
 from utils.auth_util import generate_email_token
-from utils.jwt_util import (
-    issue_token_for_user,
-)
-from tests.constants import * 
+from utils.jwt_util import issue_token_for_user
 
-# RegisterUserView Test Cases
+# --- RegisterUserView Tests ---
 
 @pytest.mark.django_db
 def test_register_user_success():
     client = APIClient()
-    data = {
+    response = client.post(REGISTER_URL, {
         "email": DUMMY_EMAIL,
         "username": DUMMY_USERNAME,
         "full_name": DUMMY_NAME,
         "password": DUMMY_PASSWORD,
-    }
-    response = client.post(REGISTER_URL, data)
+    })
     assert response.status_code == 201
+    assert response.data["success"] is True
     assert response.data["message"] == "User registered"
 
 @pytest.mark.django_db
@@ -34,18 +28,19 @@ def test_register_user_invalid_data():
     client = APIClient()
     response = client.post(REGISTER_URL, {"email": "invalid"})
     assert response.status_code == 400
-    assert "username" in response.data
-    assert "full_name" in response.data
-    
+    assert response.data["success"] is False
+    assert "username" in response.data["errors"]
+    assert "full_name" in response.data["errors"]
 
-# SendOTPView Test Cases
+# --- SendOTPView Tests ---
 
 @pytest.mark.django_db
 def test_send_otp_success(user):
     client = APIClient()
     response = client.post(SEND_OTP_URL, {"email": user.email})
     assert response.status_code == 200
-    assert "token" in response.data
+    assert response.data["success"] is True
+    assert "token" in response.data["data"]
     assert cache.get(f"otp_{user.email}") is not None
 
 @pytest.mark.django_db
@@ -53,10 +48,10 @@ def test_send_otp_user_not_found():
     client = APIClient()
     response = client.post(SEND_OTP_URL, {"email": "notfound@example.com"})
     assert response.status_code == 404
-    assert response.data["error"] == "User not found"
-    
+    assert response.data["success"] is False
+    assert response.data["message"] == "User not found"
 
-# VerifyOTPView Test Cases
+# --- VerifyOTPView Tests ---
 
 @pytest.mark.django_db
 def test_verify_otp_success(user, otp, cache_otp):
@@ -64,8 +59,9 @@ def test_verify_otp_success(user, otp, cache_otp):
     client = APIClient()
     response = client.post(VERIFY_OTP_URL, {"token": token, "otp": otp})
     assert response.status_code == 200
-    assert "access" in response.data
-    assert "refresh" in response.data
+    assert response.data["success"] is True
+    assert "access" in response.data["data"]
+    assert "refresh" in response.data["data"]
 
 @pytest.mark.django_db
 def test_verify_otp_invalid_otp(user, otp, cache_otp):
@@ -73,7 +69,8 @@ def test_verify_otp_invalid_otp(user, otp, cache_otp):
     client = APIClient()
     response = client.post(VERIFY_OTP_URL, {"token": token, "otp": "000000"})
     assert response.status_code == 400
-    assert response.data["error"] == "Invalid OTP"
+    assert response.data["success"] is False
+    assert response.data["message"] == "Invalid OTP"
 
 @pytest.mark.django_db
 def test_verify_otp_expired_token():
@@ -85,72 +82,95 @@ def test_verify_otp_expired_token():
     client = APIClient()
     response = client.post(VERIFY_OTP_URL, {"token": expired_token, "otp": "123456"})
     assert response.status_code == 401
-    assert response.data["error"] == "Token expired"
+    assert response.data["success"] is False
+    assert response.data["message"] == "Token expired"
 
-
-
-# CustomTokenRefreshView Test Cases
-
-class MockRequest:
-    def __init__(self, ip="192.168.1.1", ua="Mozilla/5.0"):
-        self.META = {
-            "REMOTE_ADDR": ip,
-            "HTTP_USER_AGENT": ua,
-        }
-        self.ip = ip
-        self.ua = ua
+# --- CustomTokenRefreshView Tests ---
 
 @pytest.mark.django_db
-def test_refresh_token_success():
-    user = ChatUser.objects.create_user(
-        email=DUMMY_EMAIL,
-        username="refresher",
-        full_name=DUMMY_NAME,
-        password=DUMMY_PASSWORD
-    )
-    mock_request = MockRequest()
-    token = issue_token_for_user(user, mock_request)
+def test_refresh_token_success(issue_bound_token, mock_request):
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=mock_request.ip, HTTP_USER_AGENT=mock_request.ua)
+    response = client.post(
+        REFRESH_URL,
+        {"refresh": str(issue_bound_token)},
+        REMOTE_ADDR=mock_request().ip,
+        HTTP_USER_AGENT=mock_request().ua
+    )
     assert response.status_code == 200
-    assert "access" in response.data
-    assert "refresh" in response.data
+    assert response.data["success"] is True
+    assert "access" in response.data["data"]
+    assert "refresh" in response.data["data"]
 
 @pytest.mark.django_db
 def test_refresh_token_missing():
     client = APIClient()
     response = client.post(REFRESH_URL, {})
     assert response.status_code == 400
-    assert response.data["error"] == "Missing refresh token"
+    assert response.data["success"] is False
+    assert response.data["message"] == "Missing refresh token"
 
 @pytest.mark.django_db
-def test_refresh_token_client_mismatch():
-    user = ChatUser.objects.create_user(
-        email="mismatch@example.com",
-        username="mismatch",
-        full_name=DUMMY_NAME,
-        password=DUMMY_PASSWORD
-    )
-    token = issue_token_for_user(user, MockRequest("192.168.1.1", "UA"))
-    altered_request = MockRequest("10.0.0.1", "UA")
-
+def test_refresh_token_client_mismatch(user, mock_request):
+    original = mock_request("192.168.1.1", "UA")
+    altered = mock_request("10.0.0.1", "UA")
+    token = issue_token_for_user(user, original)
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)}, REMOTE_ADDR=altered_request.ip, HTTP_USER_AGENT=altered_request.ua)
+    response = client.post(
+        REFRESH_URL,
+        {"refresh": str(token)},
+        REMOTE_ADDR=altered.ip,
+        HTTP_USER_AGENT=altered.ua
+    )
     assert response.status_code == 403
-    assert response.data["detail"] == "Client mismatch"
+    assert response.data["success"] is False
+    assert response.data["message"] == "Client mismatch"
 
 @pytest.mark.django_db
-def test_refresh_token_blacklisted():
-    user = ChatUser.objects.create_user(
-        email="black@example.com",
-        username="black",
-        full_name=DUMMY_NAME,
-        password=DUMMY_PASSWORD
-    )
-    token = issue_token_for_user(user, MockRequest())
-    token.blacklist()
-
+def test_refresh_token_blacklisted(issue_bound_token):
+    issue_bound_token.blacklist()
     client = APIClient()
-    response = client.post(REFRESH_URL, {"refresh": str(token)})
+    response = client.post(REFRESH_URL, {"refresh": str(issue_bound_token)})
     assert response.status_code == 401
-    assert response.data["error"] == "Invalid token"
+    assert response.data["success"] is False
+    assert response.data["message"] == "Invalid token"
+
+# --- LogoutView Tests ---
+
+@pytest.mark.django_db
+def test_logout_success(auth_client, issue_bound_token):
+    response = auth_client.post(LOGOUT_URL, {"refresh": str(issue_bound_token)})
+    assert response.status_code == 200
+    assert response.data["success"] is True
+    assert response.data["message"] == "Logout successful"
+    assert BlacklistedToken.objects.filter(token__jti=issue_bound_token["jti"]).exists()
+
+@pytest.mark.django_db
+def test_logout_missing_token(auth_client):
+    response = auth_client.post(LOGOUT_URL, {})
+    assert response.status_code == 400
+    assert response.data["success"] is False
+    assert "refresh" in response.data["errors"]
+
+@pytest.mark.django_db
+def test_logout_invalid_token(auth_client):
+    response = auth_client.post(LOGOUT_URL, {"refresh": "malformed.token.string"})
+    assert response.status_code == 401
+    assert response.data["success"] is False
+    assert "refresh" in response.data["errors"]
+
+@pytest.mark.django_db
+def test_logout_client_mismatch(user, mock_request):
+    original = mock_request("192.168.1.1", "UA")
+    altered = mock_request("10.0.0.1", "UA")
+    token = issue_token_for_user(user, original)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {str(token.access_token)}")
+    response = client.post(
+        LOGOUT_URL,
+        {"refresh": str(token)},
+        REMOTE_ADDR=altered.ip,
+        HTTP_USER_AGENT=altered.ua
+    )
+    assert response.status_code == 401
+    assert response.data["success"] is False
+    assert "client binding" in response.data["errors"]["refresh"][0].lower()

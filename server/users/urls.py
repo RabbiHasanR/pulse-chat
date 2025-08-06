@@ -4,7 +4,8 @@ from .views import (
     RegisterUserView,
     SendOTPView,
     VerifyOTPView,
-    CustomTokenRefreshView
+    CustomTokenRefreshView,
+    LogoutView
 )
 
 urlpatterns = [
@@ -15,4 +16,7 @@ urlpatterns = [
     path("verify-otp/", VerifyOTPView.as_view(), name="verify-otp"),
 
     path("refresh-token/", CustomTokenRefreshView.as_view(), name="token-refresh"),
+    
+    path("logout/", LogoutView.as_view(), name="logout"),
+    
 ]
