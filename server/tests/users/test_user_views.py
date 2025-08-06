@@ -179,4 +179,4 @@ def test_logout_client_mismatch(user, mock_request):
     )
     assert response.status_code == 403
     assert response.data["success"] is False
-    assert "client binding" in response.data["errors"]["token"][0].lower()
+    assert response.data["errors"]["token"][0] == "Token does not match client signature"
