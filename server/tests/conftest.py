@@ -64,14 +64,13 @@ def mock_request():
             'REMOTE_ADDR': ip,
             'HTTP_USER_AGENT': ua
         }
-        # request.ip = ip
-        # request.ua = ua
         return request
     return _make
 
 @pytest.fixture
 def issue_bound_token(user, mock_request):
-    return issue_token_for_user(user, mock_request())
+    token = issue_token_for_user(user, mock_request())
+    return token  # should be a RefreshToken object
 
 @pytest.fixture
 def auth_client(issue_bound_token, mock_request):
