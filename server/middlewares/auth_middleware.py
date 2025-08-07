@@ -1,7 +1,7 @@
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import AccessToken
 from utils.jwt_util import verify_token_signature
-from utils.response import error_response  # ✅ import your error wrapper
+from utils.response import error_response 
 
 class JWTClientBindingMiddleware:
     def __init__(self, get_response):
