@@ -1,0 +1,7 @@
+Welcome, {{ user_email }}!
+
+Thanks for registering with us. We're thrilled to have you on board.
+
+If you have any questions, feel free to reach out.
+
+— The Team

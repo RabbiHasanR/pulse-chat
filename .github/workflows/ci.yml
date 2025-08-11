@@ -3,6 +3,18 @@ name: Pulse Chat CI
 on:
   push:
     branches: [master]
+    paths-ignore:
+        - '**.md'
+        - '.github/CODEOWNERS'
+        - '.github/ISSUE_TEMPLATE/**'
+        - 'docs/**'
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'docs/**'
 
 jobs:
   # lint:
@@ -63,11 +75,13 @@ jobs:
       DATABASE_PORT: 5432
       REDIS_HOST: localhost
       REDIS_PORT: 6379
-      SECRET_KEY: dummysecret
+      DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+      EMAIL_HOST_PASSWORD: ${{ secrets.EMAIL_HOST_PASSWORD }}
       DEBUG: "True"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
