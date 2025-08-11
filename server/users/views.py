@@ -20,12 +20,12 @@ class RegisterUserView(APIView):
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            send_templated_email_task.delay(
-                subject="Welcome to Our Platform!",
-                to_email=user.email,
-                template_name="emails/welcome_email.html",
-                context={"user_email": user.email}
-            )
+            # send_templated_email_task.delay(
+            #     subject="Welcome to Our Platform!",
+            #     to_email=user.email,
+            #     template_name="emails/welcome_email.html",
+            #     context={"user_email": user.email}
+            # )
             return success_response(
                 message="User registered",
                 data={"id": user.id, "email": user.email},
@@ -48,12 +48,12 @@ class SendOTPView(APIView):
 
             email_token = generate_email_token(email)
 
-            send_templated_email_task.delay(
-                subject="Your OTP Code",
-                to_email=email,
-                template_name="emails/otp_email.html",
-                context={"otp": otp, "user_email": email}
-            )
+            # send_templated_email_task.delay(
+            #     subject="Your OTP Code",
+            #     to_email=email,
+            #     template_name="emails/otp_email.html",
+            #     context={"otp": otp, "user_email": email}
+            # )
 
             return success_response(
                 message="OTP sent",
