@@ -39,7 +39,6 @@ def test_verify_token_signature_mismatch(user, mock_request):
     request = mock_request()
     token = issue_token_for_user(user, request)
 
-    # Alter request (simulate different client)
     request.META['REMOTE_ADDR'] = '10.0.0.1'
     assert verify_token_signature(token, request) is False
 

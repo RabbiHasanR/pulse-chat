@@ -37,7 +37,7 @@ def mock_request():
 @pytest.fixture
 def issue_bound_token(user, mock_request):
     token = issue_token_for_user(user, mock_request())
-    return token  # should be a RefreshToken object
+    return token
 
 @pytest.fixture
 def auth_client(issue_bound_token, mock_request):
@@ -53,5 +53,7 @@ def auth_client(issue_bound_token, mock_request):
 @pytest.fixture
 def get_response():
     return lambda request: Mock(status_code=200)
+
+
 
 

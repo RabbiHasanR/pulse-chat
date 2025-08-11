@@ -29,6 +29,7 @@ def test_register_user_invalid_data():
     response = client.post(REGISTER_URL, {"email": "invalid"})
     assert response.status_code == 400
     assert response.data["success"] is False
+    assert "email" in response.data["errors"]
     assert "username" in response.data["errors"]
     assert "full_name" in response.data["errors"]
 

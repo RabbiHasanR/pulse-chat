@@ -1,4 +1,4 @@
-name: Django Pulse Chat CI
+name: Pulse Chat CI
 
 on:
   push:
