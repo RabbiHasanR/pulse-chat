@@ -50,3 +50,8 @@ def auth_client(issue_bound_token, mock_request):
     return client
 
 
+@pytest.fixture
+def get_response():
+    return lambda request: Mock(status_code=200)
+
+
