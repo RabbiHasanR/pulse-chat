@@ -2,7 +2,6 @@ import pytest
 from unittest.mock import patch, Mock
 from rest_framework.test import APIRequestFactory
 from middlewares.auth_middleware import JWTClientBindingMiddleware
-from utils.response import error_response
 
 factory = APIRequestFactory()
 
@@ -17,8 +16,8 @@ def test_valid_token_and_matching_signature(issue_bound_token, mock_request, get
     }
     request.META = mock_request().META
 
-    with patch("middleware.jwt_client_binding.AccessToken", return_value=issue_bound_token.access_token), \
-         patch("middleware.jwt_client_binding.verify_token_signature", return_value=True):
+    with patch("middlewares.auth_middleware.AccessToken", return_value=issue_bound_token.access_token), \
+         patch("middleware.auth_middleware.verify_token_signature", return_value=True):
         middleware = JWTClientBindingMiddleware(get_response)
         response = middleware(request)
         assert response.status_code == 200
