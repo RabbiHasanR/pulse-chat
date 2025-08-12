@@ -1,5 +1,6 @@
 import pytest
 import jwt
+from unittest.mock import patch
 from django.conf import settings
 from django.core.cache import cache
 from rest_framework.test import APIClient
@@ -11,7 +12,8 @@ from utils.jwt_util import issue_token_for_user
 # --- RegisterUserView Tests ---
 
 @pytest.mark.django_db
-def test_register_user_success():
+@patch("users.views.send_templated_email_task.delay")
+def test_register_user_success(mock_send_email):
     client = APIClient()
     response = client.post(REGISTER_URL, {
         "email": DUMMY_EMAIL,
@@ -22,6 +24,13 @@ def test_register_user_success():
     assert response.status_code == 201
     assert response.data["success"] is True
     assert response.data["message"] == "User registered"
+    
+    mock_send_email.assert_called_once_with(
+        subject="Welcome to Our Platform!",
+        to_email=DUMMY_EMAIL,
+        template_name="emails/welcome_email.html",
+        context={"user_email": DUMMY_EMAIL}
+    )
 
 @pytest.mark.django_db
 def test_register_user_invalid_data():
@@ -36,13 +45,23 @@ def test_register_user_invalid_data():
 # --- SendOTPView Tests ---
 
 @pytest.mark.django_db
-def test_send_otp_success(user):
+@patch("users.views.send_templated_email_task.delay")
+def test_send_otp_success(mock_send_otp, user):
     client = APIClient()
     response = client.post(SEND_OTP_URL, {"email": user.email})
     assert response.status_code == 200
     assert response.data["success"] is True
     assert "token" in response.data["data"]
-    assert cache.get(f"otp_{user.email}") is not None
+    
+    cached_otp = cache.get(f"otp_{user.email}")
+    assert cached_otp is not None
+    
+    mock_send_otp.assert_called_once_with(
+        subject="Your OTP Code",
+        to_email=user.email,
+        template_name="emails/otp_email.html",
+        context={"otp": cached_otp, "user_email": user.email}
+    )
 
 @pytest.mark.django_db
 def test_send_otp_user_not_found():
