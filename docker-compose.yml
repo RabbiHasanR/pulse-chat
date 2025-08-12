@@ -3,6 +3,8 @@ services:
     build:
       context: ./database
       dockerfile: Dockerfile
+    container_name: db
+    hostname: db
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -31,6 +33,9 @@ services:
     build:
       context: ./server
       dockerfile: Dockerfile
+    image: server
+    container_name: server
+    hostname: server
     environment:
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
@@ -46,6 +51,31 @@ services:
       - "8000:8000"
     entrypoint: /app/entrypoint.sh
     command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./server:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  
+  celery:
+    image: server
+    container_name: celery
+    hostname: celery
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+      - DATABASE_USER=${POSTGRES_USER}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - DATABASE_NAME=${POSTGRES_DB}
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    command: celery -A core worker --loglevel=info
     volumes:
       - ./server:/app
     depends_on:
