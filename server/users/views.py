@@ -1,7 +1,9 @@
 import jwt
 from django.conf import settings
 from django.core.cache import cache
+from django.db.models import Q
 
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -10,12 +12,14 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
-from .models import ChatUser
+from .models import ChatUser, Contact
+from .pagination import ContactCursorPagination, UserCursorPagination
 from .serializers import UserRegistrationSerializer
 from utils.response import success_response, error_response
 from utils.auth_util import generate_otp, generate_email_token
 from utils.jwt_util import issue_token_for_user, verify_token_signature
 from background_worker.users.tasks import send_templated_email_task
+
 
 
 class RegisterUserView(APIView):
@@ -269,3 +273,129 @@ class LogoutView(APIView):
                 errors={"refresh": ["Token is invalid"]},
                 status=401
             )
+            
+
+
+
+
+
+class AddContactView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        identifier = request.data.get('identifier')
+
+        if not identifier:
+            return error_response(
+                message="Identifier (email or username) is required",
+                errors={"identifier": ["This field is required"]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            contact_user = ChatUser.objects.get(
+                Q(email=identifier) | Q(username=identifier)
+            )
+        except ChatUser.DoesNotExist:
+            return error_response(
+                message="User not found",
+                errors={"identifier": ["No user matches this identifier"]},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if contact_user == request.user:
+            return error_response(
+                message="Cannot add yourself as a contact",
+                errors={"identifier": ["Self-addition is not allowed"]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        contact, created = Contact.objects.get_or_create(
+            owner=request.user,
+            contact_user=contact_user
+        )
+
+        if not created:
+            return success_response(
+                message="Already in contacts",
+                data={
+                    "id": contact_user.id,
+                    "email": contact_user.email,
+                    "username": contact_user.username,
+                    "full_name": contact_user.full_name
+                },
+                status=status.HTTP_200_OK
+            )
+
+        return success_response(
+            message="Contact added successfully",
+            data={
+                "id": contact_user.id,
+                "email": contact_user.email,
+                "username": contact_user.username,
+                "full_name": contact_user.full_name
+            },
+            status=status.HTTP_201_CREATED
+        )
+        
+
+
+class GetContactsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            contacts = Contact.objects.filter(owner=request.user)\
+                .select_related('contact_user')
+
+            paginator = ContactCursorPagination()
+            page = paginator.paginate_queryset(contacts, request)
+
+            contact_list = [
+                {
+                    "id": c.contact_user.id,
+                    "username": c.contact_user.username,
+                    "email": c.contact_user.email,
+                    "full_name": c.contact_user.full_name,
+                    "added_at": c.created_at
+                }
+                for c in page
+            ]
+
+            return paginator.get_paginated_response(
+                success_response(data=contact_list, message="Contacts retrieved successfully").data
+            )
+
+        except Exception as e:
+            return error_response(message="Failed to retrieve contacts", errors=str(e), status_code=500)
+        
+
+
+
+class ExploreUsersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            users = ChatUser.objects.exclude(id=request.user.id)
+
+            paginator = UserCursorPagination()
+            page = paginator.paginate_queryset(users, request)
+
+            user_list = [
+                {
+                    "id": u.id,
+                    "username": u.username,
+                    "email": u.email,
+                    "full_name": getattr(u, "full_name", ""),
+                    "joined_at": u.date_joined
+                }
+                for u in page
+            ]
+
+            return paginator.get_paginated_response(
+                success_response(data=user_list, message="Users retrieved successfully").data
+            )
+
+        except Exception as e:
+            return error_response(message="Failed to retrieve users", errors=str(e), status_code=500)
