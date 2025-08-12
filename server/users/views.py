@@ -7,6 +7,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+
 from .models import ChatUser
 from .serializers import UserRegistrationSerializer
 from utils.response import success_response, error_response
@@ -16,6 +19,15 @@ from background_worker.users.tasks import send_templated_email_task
 
 
 class RegisterUserView(APIView):
+    @swagger_auto_schema(
+        request_body=UserRegistrationSerializer,
+        responses={
+            201: openapi.Response(description="User registered"),
+            400: openapi.Response(description="Validation failed")
+        },
+        operation_description="Register a new user",
+        tags=["Authentication"]
+    )
     def post(self, request):
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
@@ -39,6 +51,21 @@ class RegisterUserView(APIView):
 
 
 class SendOTPView(APIView):
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'email': openapi.Schema(type=openapi.TYPE_STRING, format='email')
+            },
+            required=['email']
+        ),
+        responses={
+            200: openapi.Response(description="OTP sent"),
+            404: openapi.Response(description="User not found")
+        },
+        operation_description="Send OTP to user's email",
+        tags=["Authentication"]
+    )
     def post(self, request):
         email = request.data.get('email')
         try:
@@ -69,6 +96,23 @@ class SendOTPView(APIView):
 
 
 class VerifyOTPView(APIView):
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'token': openapi.Schema(type=openapi.TYPE_STRING),
+                'otp': openapi.Schema(type=openapi.TYPE_STRING)
+            },
+            required=['token', 'otp']
+        ),
+        responses={
+            200: openapi.Response(description="OTP verified"),
+            400: openapi.Response(description="Invalid OTP or token"),
+            401: openapi.Response(description="Token expired")
+        },
+        operation_description="Verify OTP and issue JWT tokens",
+        tags=["Authentication"]
+    )
     def post(self, request):
         email_token = request.data.get('token')
         otp = request.data.get('otp')
@@ -110,6 +154,24 @@ class VerifyOTPView(APIView):
 
 
 class CustomTokenRefreshView(APIView):
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'refresh': openapi.Schema(type=openapi.TYPE_STRING)
+            },
+            required=['refresh']
+        ),
+        responses={
+            200: openapi.Response(description="Token refreshed"),
+            400: openapi.Response(description="Missing or invalid token"),
+            401: openapi.Response(description="Token expired or invalid"),
+            403: openapi.Response(description="Client mismatch"),
+            404: openapi.Response(description="User not found")
+        },
+        operation_description="Refresh JWT tokens using a valid refresh token",
+        tags=["Authentication"]
+    )
     def post(self, request):
         token_str = request.data.get("refresh")
         if not token_str:
@@ -165,7 +227,23 @@ class CustomTokenRefreshView(APIView):
 
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
-
+    
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'refresh': openapi.Schema(type=openapi.TYPE_STRING)
+            },
+            required=['refresh']
+        ),
+        responses={
+            200: openapi.Response(description="Logout successful"),
+            400: openapi.Response(description="Missing refresh token"),
+            401: openapi.Response(description="Invalid or expired token")
+        },
+        operation_description="Blacklist refresh token to log out user",
+        tags=["Authentication"]
+    )
     def post(self, request):
         refresh_token = request.data.get("refresh")
         if not refresh_token:
