@@ -210,7 +210,7 @@ def test_logout_client_mismatch(user, mock_request):
 
 @pytest.mark.django_db
 def test_add_contact_by_email_success(auth_client, another_user):
-    response = auth_client.post(CONTACTS_URL, {"identifier": another_user.email})
+    response = auth_client.post(ADD_CONTACTS_URL, {"identifier": another_user.email})
     assert response.status_code == 201
     assert response.data["success"] is True
     assert response.data["data"]["email"] == another_user.email
@@ -219,7 +219,7 @@ def test_add_contact_by_email_success(auth_client, another_user):
 
 @pytest.mark.django_db
 def test_add_contact_by_username_success(auth_client, another_user):
-    response = auth_client.post(CONTACTS_URL, {"identifier": another_user.username})
+    response = auth_client.post(ADD_CONTACTS_URL, {"identifier": another_user.username})
     assert response.status_code == 201
     assert response.data["data"]["username"] == another_user.username
     assert Contact.objects.filter(contact_user=another_user).exists()
@@ -227,24 +227,24 @@ def test_add_contact_by_username_success(auth_client, another_user):
 @pytest.mark.django_db
 def test_add_contact_already_exists(auth_client, user, another_user):
     Contact.objects.create(owner=user, contact_user=another_user)
-    response = auth_client.post(CONTACTS_URL, {"identifier": another_user.email})
+    response = auth_client.post(ADD_CONTACTS_URL, {"identifier": another_user.email})
     assert response.status_code == 200
     assert response.data["message"] == "Already in contacts"
 
 @pytest.mark.django_db
 def test_add_contact_self(auth_client, user):
-    response = auth_client.post(CONTACTS_URL, {"identifier": user.email})
+    response = auth_client.post(ADD_CONTACTS_URL, {"identifier": user.email})
     assert response.status_code == 400
     assert "Self-addition is not allowed" in str(response.data["errors"]["identifier"])
 
 @pytest.mark.django_db
 def test_add_contact_user_not_found(auth_client):
-    response = auth_client.post(CONTACTS_URL, {"identifier": "nonexistent@example.com"})
+    response = auth_client.post(ADD_CONTACTS_URL, {"identifier": "nonexistent@example.com"})
     assert response.status_code == 404
     assert "User not found" in response.data["message"]
 
 @pytest.mark.django_db
 def test_add_contact_missing_identifier(auth_client):
-    response = auth_client.post(CONTACTS_URL, {})
+    response = auth_client.post(ADD_CONTACTS_URL, {})
     assert response.status_code == 400
     assert "This field is required" in str(response.data["errors"]["identifier"])
