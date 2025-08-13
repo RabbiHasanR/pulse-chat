@@ -326,3 +326,68 @@ def test_get_contacts_pagination(auth_client, user):
     assert next_response.data["success"] is True
     assert len(next_response.data["data"]["contacts"]) == 5
     assert next_response.data["data"]["previous"] is not None
+    
+    
+
+# --- ExploreUsersView Tests ---
+
+
+
+@pytest.mark.django_db
+def test_explore_users_success(auth_client, another_user):
+    response = auth_client.get(EXPLORE_USERS_URL)
+
+    assert response.status_code == 200
+    assert response.data["success"] is True
+    assert len(response.data["data"]["users"]) == 1
+    assert response.data["data"]["users"][0]["email"] == another_user.email
+
+
+@pytest.mark.django_db
+def test_explore_users_empty(auth_client):
+    response = auth_client.get(EXPLORE_USERS_URL)
+
+    assert response.status_code == 200
+    assert response.data["success"] is True
+    assert response.data["data"]["users"] == []
+
+
+@pytest.mark.django_db
+def test_explore_users_pagination(auth_client, user):
+    for i in range(15):
+        ChatUser.objects.create_user(
+            email=f"user{i}@example.com",
+            username=f"user{i}",
+            full_name=f"User {i}",
+            password="testpass"
+        )
+
+    response = auth_client.get(EXPLORE_USERS_URL)
+    assert response.status_code == 200
+    assert len(response.data["data"]["users"]) == 10
+    assert response.data["data"]["next"] is not None
+
+    next_url = response.data["data"]["next"]
+    next_response = auth_client.get(next_url)
+    assert next_response.status_code == 200
+    assert len(next_response.data["data"]["users"]) == 5
+
+
+@pytest.mark.django_db
+def test_explore_users_unauthenticated():
+    client = APIClient()
+    response = client.get(EXPLORE_USERS_URL)
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_explore_users_internal_error(auth_client):
+    from unittest.mock import patch
+
+    with patch("users.models.ChatUser.objects.exclude") as mock_exclude:
+        mock_exclude.side_effect = Exception("Simulated failure")
+
+        response = auth_client.get(EXPLORE_USERS_URL)
+        assert response.status_code == 500
+        assert response.data["success"] is False
+        assert "Failed to retrieve users" in response.data["message"]

@@ -5,6 +5,7 @@ REFRESH_URL = "/api/auth/refresh-token/"
 LOGOUT_URL = "/api/auth/logout/"
 ADD_CONTACTS_URL = "/api/auth/add-contacts/"
 GET_CONTACTS_URL = "/api/auth/get-contacts/"
+EXPLORE_USERS_URL = "/api/auth/explore-users/"
 
 DUMMY_PASSWORD = "secret123"
 DUMMY_EMAIL = "test@example.com"
