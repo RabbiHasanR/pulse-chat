@@ -353,9 +353,7 @@ class GetContactsView(APIView):
 
             serializer = ContactSerializer(page, many=True)
 
-            return paginator.get_paginated_response(
-                success_response(data=serializer.data, message="Contacts retrieved successfully").data
-            )
+            return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
             return error_response(message="Failed to retrieve contacts", errors=str(e), status_code=500)
@@ -375,9 +373,7 @@ class ExploreUsersView(APIView):
 
             serializer = ContactUserSerializer(page, many=True)
 
-            return paginator.get_paginated_response(
-                success_response(data=serializer.data, message="Users retrieved successfully").data
-            )
+            return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
             return error_response(message="Failed to retrieve users", errors=str(e), status_code=500)
