@@ -21,8 +21,8 @@ urlpatterns = [
     
     path("logout/", LogoutView.as_view(), name="logout"),
     
-    path('get_contacts/', GetContactsView.as_view(), name='get-contacts'),
+    path('get-contacts/', GetContactsView.as_view(), name='get-contacts'),
     
-    path('add_contacts/', AddContactView.as_view(), name='add-contacts'),
+    path('add-contacts/', AddContactView.as_view(), name='add-contacts'),
     
 ]

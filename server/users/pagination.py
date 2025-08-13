@@ -13,7 +13,7 @@ class ContactCursorPagination(CursorPagination):
                 "next": self.get_next_link(),
                 "previous": self.get_previous_link()
             },
-            status_code=200
+            status=200
         )
     
 
@@ -29,5 +29,5 @@ class UserCursorPagination(CursorPagination):
                 "next": self.get_next_link(),
                 "previous": self.get_previous_link()
             },
-            status_code=200
+            status=200
         )

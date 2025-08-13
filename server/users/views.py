@@ -350,12 +350,14 @@ class GetContactsView(APIView):
 
             paginator = ContactCursorPagination()
             page = paginator.paginate_queryset(contacts, request)
-
+            
             serializer = ContactSerializer(page, many=True)
 
             return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return error_response(message="Failed to retrieve contacts", errors=str(e), status_code=500)
         
 

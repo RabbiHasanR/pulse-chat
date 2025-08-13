@@ -284,7 +284,7 @@ def test_get_contacts_unauthenticated():
     
 @pytest.mark.django_db
 def test_get_contacts_internal_error(auth_client):
-    with patch("contacts.models.Contact.objects.filter") as mock_filter:
+    with patch("users.models.Contact.objects.filter") as mock_filter:
         mock_filter.side_effect = Exception("Simulated failure")
 
         response = auth_client.get(GET_CONTACTS_URL)
