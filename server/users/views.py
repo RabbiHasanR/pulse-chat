@@ -14,7 +14,7 @@ from drf_yasg import openapi
 
 from .models import ChatUser, Contact
 from .pagination import ContactCursorPagination, UserCursorPagination
-from .serializers import UserRegistrationSerializer
+from .serializers import UserRegistrationSerializer, ContactSerializer, ContactUserSerializer
 from utils.response import success_response, error_response
 from utils.auth_util import generate_otp, generate_email_token
 from utils.jwt_util import issue_token_for_user, verify_token_signature
@@ -351,19 +351,10 @@ class GetContactsView(APIView):
             paginator = ContactCursorPagination()
             page = paginator.paginate_queryset(contacts, request)
 
-            contact_list = [
-                {
-                    "id": c.contact_user.id,
-                    "username": c.contact_user.username,
-                    "email": c.contact_user.email,
-                    "full_name": c.contact_user.full_name,
-                    "added_at": c.created_at
-                }
-                for c in page
-            ]
+            serializer = ContactSerializer(page, many=True)
 
             return paginator.get_paginated_response(
-                success_response(data=contact_list, message="Contacts retrieved successfully").data
+                success_response(data=serializer.data, message="Contacts retrieved successfully").data
             )
 
         except Exception as e:
@@ -382,19 +373,10 @@ class ExploreUsersView(APIView):
             paginator = UserCursorPagination()
             page = paginator.paginate_queryset(users, request)
 
-            user_list = [
-                {
-                    "id": u.id,
-                    "username": u.username,
-                    "email": u.email,
-                    "full_name": getattr(u, "full_name", ""),
-                    "joined_at": u.date_joined
-                }
-                for u in page
-            ]
+            serializer = ContactUserSerializer(page, many=True)
 
             return paginator.get_paginated_response(
-                success_response(data=user_list, message="Users retrieved successfully").data
+                success_response(data=serializer.data, message="Users retrieved successfully").data
             )
 
         except Exception as e:

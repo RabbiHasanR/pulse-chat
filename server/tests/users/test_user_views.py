@@ -6,7 +6,7 @@ from django.core.cache import cache
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 
-from users.models import Contact
+from users.models import Contact, ChatUser
 from tests.constants import *
 from utils.auth_util import generate_email_token
 from utils.jwt_util import issue_token_for_user
@@ -248,3 +248,79 @@ def test_add_contact_missing_identifier(auth_client):
     response = auth_client.post(ADD_CONTACTS_URL, {})
     assert response.status_code == 400
     assert "This field is required" in str(response.data["errors"]["identifier"])
+    
+    
+    
+# --- GetContactsView Tests ---
+
+@pytest.mark.django_db
+def test_get_contacts_success(auth_client, user, another_user):
+    Contact.objects.create(owner=user, contact_user=another_user)
+
+    response = auth_client.get(GET_CONTACTS_URL)
+
+    assert response.status_code == 200
+    assert response.data["success"] is True
+    assert "contacts" in response.data["data"]
+    assert len(response.data["data"]["contacts"]) == 1
+    assert response.data["data"]["contacts"][0]["contact_user"]["email"] == another_user.email
+    
+
+@pytest.mark.django_db
+def test_get_contacts_empty(auth_client):
+    response = auth_client.get(GET_CONTACTS_URL)
+
+    assert response.status_code == 200
+    assert response.data["success"] is True
+    assert response.data["data"]["contacts"] == []
+    
+
+@pytest.mark.django_db
+def test_get_contacts_unauthenticated():
+    client = APIClient()
+    response = client.get(GET_CONTACTS_URL)
+
+    assert response.status_code == 401
+    
+@pytest.mark.django_db
+def test_get_contacts_internal_error(auth_client):
+    with patch("contacts.models.Contact.objects.filter") as mock_filter:
+        mock_filter.side_effect = Exception("Simulated failure")
+
+        response = auth_client.get(GET_CONTACTS_URL)
+
+        assert response.status_code == 500
+        assert response.data["success"] is False
+        assert response.data["message"] == "Failed to retrieve contacts"
+        assert "Simulated failure" in response.data["errors"]
+        
+
+
+@pytest.mark.django_db
+def test_get_contacts_pagination(auth_client, user):
+    for i in range(15):
+        contact_user = ChatUser.objects.create_user(
+            email=f"user{i}@example.com",
+            username=f"user{i}",
+            full_name=f"User {i}",
+            password="testpass"
+        )
+        Contact.objects.create(owner=user, contact_user=contact_user)
+
+    response = auth_client.get(GET_CONTACTS_URL)
+
+    assert response.status_code == 200
+    assert response.data["success"] is True
+
+    contacts = response.data["data"]["contacts"]
+    next_link = response.data["data"]["next"]
+
+    assert len(contacts) == 10
+    assert next_link is not None
+
+    next_response = auth_client.get(next_link)
+
+    assert next_response.status_code == 200
+    assert next_response.data["success"] is True
+    assert len(next_response.data["data"]["contacts"]) == 5
+    assert next_response.data["data"]["previous"] is not None
