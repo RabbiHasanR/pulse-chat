@@ -1,5 +1,5 @@
 from rest_framework.pagination import CursorPagination
-from utils.responses import success_response
+from utils.response import success_response, error_response
 
 class ContactCursorPagination(CursorPagination):
     page_size = 10
