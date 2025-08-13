@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import patch, Mock
 from rest_framework.test import APIRequestFactory
 from middlewares.auth_middleware import JWTClientBindingMiddleware
@@ -32,7 +33,8 @@ def test_valid_token_but_signature_mismatch(issue_bound_token, mock_request, get
         middleware = JWTClientBindingMiddleware(get_response)
         response = middleware(request)
         assert response.status_code == 403
-        assert response.data["message"] == "Client mismatch"
+        body = json.loads(response.content)
+        assert body["message"] == "Client mismatch"
 
 def test_invalid_token(get_response):
     request = factory.get("/")
@@ -44,7 +46,8 @@ def test_invalid_token(get_response):
         middleware = JWTClientBindingMiddleware(get_response)
         response = middleware(request)
         assert response.status_code == 401
-        assert response.data["message"] == "Invalid token"
+        body = json.loads(response.content)
+        assert body["message"] == "Invalid token"
 
 def test_missing_authorization_header(get_response):
     request = factory.get("/")

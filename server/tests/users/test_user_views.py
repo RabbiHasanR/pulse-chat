@@ -1,5 +1,6 @@
 import pytest
 import jwt
+import json
 from unittest.mock import patch
 from django.conf import settings
 from django.core.cache import cache
@@ -200,8 +201,9 @@ def test_logout_client_mismatch(user, mock_request):
         HTTP_USER_AGENT=ua
     )
     assert response.status_code == 403
-    assert response.data["success"] is False
-    assert response.data["errors"]["token"][0] == "Token does not match client signature"
+    body = json.loads(response.content)
+    assert body["success"] is False
+    assert body["errors"]["token"][0] == "Token does not match client signature"
 
 
 

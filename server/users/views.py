@@ -358,7 +358,7 @@ class GetContactsView(APIView):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return error_response(message="Failed to retrieve contacts", errors=str(e), status_code=500)
+            return error_response(message="Failed to retrieve contacts", errors=str(e), status=500)
         
 
 
@@ -378,4 +378,4 @@ class ExploreUsersView(APIView):
             return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
-            return error_response(message="Failed to retrieve users", errors=str(e), status_code=500)
+            return error_response(message="Failed to retrieve users", errors=str(e), status=500)
