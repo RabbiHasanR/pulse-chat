@@ -5,7 +5,9 @@ from .views import (
     SendOTPView,
     VerifyOTPView,
     CustomTokenRefreshView,
-    LogoutView
+    LogoutView,
+    AddContactView,
+    GetContactsView
 )
 
 urlpatterns = [
@@ -18,5 +20,9 @@ urlpatterns = [
     path("refresh-token/", CustomTokenRefreshView.as_view(), name="token-refresh"),
     
     path("logout/", LogoutView.as_view(), name="logout"),
+    
+    path('contacts/', GetContactsView.as_view(), name='get-contacts'),
+    
+    path('contacts/', AddContactView.as_view(), name='add-contacts'),
     
 ]

@@ -14,6 +14,16 @@ def user(db):
         full_name=DUMMY_NAME,
         password=DUMMY_PASSWORD
     )
+    
+
+@pytest.fixture
+def another_user(db):
+    return ChatUser.objects.create_user(
+        email="another@example.com",
+        username="anotheruser",
+        full_name="Another User",
+        password="anotherpass"
+    )
 
 @pytest.fixture
 def otp():
