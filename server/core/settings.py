@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     
     'users',
+    'chats',
     
 ]
 
@@ -83,7 +84,9 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'core.wsgi.application'
+# WSGI_APPLICATION = 'core.wsgi.application'
+
+ASGI_APPLICATION = "core.asgi.application"
 
 
 # Database

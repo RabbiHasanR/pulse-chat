@@ -1,13 +1,24 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
-from users.models import ChatUser
-from chats.models import ChatMessage
+
+
 from django.utils import timezone
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.receiver_id = self.scope['url_route']['kwargs']['receiver_id']
         self.sender = self.scope['user']
+        await self.accept()
+        
+        if self.sender is None or self.sender.is_anonymous:
+            await self.send(text_data=json.dumps({
+                "success": False,
+                "message": "Authentication failed",
+                "errors": {"token": ["Invalid or missing access token"]}
+            }))
+            await self.close(code=4001)
+            return
+
         self.room_name = f"chat_{min(self.sender.id, int(self.receiver_id))}_{max(self.sender.id, int(self.receiver_id))}"
         self.room_group_name = f"chat_{self.room_name}"
 
@@ -15,9 +26,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        if hasattr(self, "room_group_name"):
+            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
     async def receive(self, text_data):
+        from users.models import ChatUser
+        from chats.models import ChatMessage
         data = json.loads(text_data)
         message = data['message']
 
