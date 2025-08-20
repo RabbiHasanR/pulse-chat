@@ -47,6 +47,8 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CELERY_BROKER_URL=redis://redis:6379/0
+      - CHANNEL_URL=redis://redis:6379/1
+      - CACHE_URL=redis://redis:6379/2
     ports:
       - "8000:8000"
     entrypoint: /app/entrypoint.sh
@@ -80,6 +82,8 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CELERY_BROKER_URL=redis://redis:6379/0
+      - CHANNEL_URL=redis://redis:6379/1
+      - CACHE_URL=redis://redis:6379/2
     command: celery -A core worker --loglevel=info
     volumes:
       - ./server:/app

@@ -9,7 +9,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.receiver_id = self.scope['url_route']['kwargs']['receiver_id']
         self.sender = self.scope['user']
         await self.accept()
-        
+        print("sender:", self.sender)
         if self.sender is None or self.sender.is_anonymous:
             await self.send(text_data=json.dumps({
                 "success": False,
