@@ -1,150 +1,439 @@
+# import json
+# from channels.generic.websocket import AsyncWebsocketConsumer
+# from django.utils import timezone
+
+
+# class ChatConsumer(AsyncWebsocketConsumer):
+#     async def connect(self):
+#         self.receiver_id = self.scope['url_route']['kwargs']['receiver_id']
+#         self.sender = self.scope['user']
+#         await self.accept()
+
+#         if self.sender is None or self.sender.is_anonymous:
+#             await self.send(text_data=json.dumps({
+#                 "success": False,
+#                 "message": "Authentication failed",
+#                 "errors": {"token": ["Invalid or missing access token"]}
+#             }))
+#             await self.close(code=4001)
+#             return
+
+#         self.room_name = f"chat_{min(self.sender.id, int(self.receiver_id))}_{max(self.sender.id, int(self.receiver_id))}"
+#         self.room_group_name = f"chat_{self.room_name}"
+
+#         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+
+#         # Mark sender as present in Redis (or in-memory store)
+#         self.presence_goup_name = f"presence_{self.room_group_name}"
+#         await self.channel_layer.group_send(
+#             self.presence_goup_name,
+#             {
+#                 "type": "user_joined",
+#                 "user_id": self.sender.id
+#             }
+#         )
+
+#     async def disconnect(self, close_code):
+#         if hasattr(self, "room_group_name"):
+#             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+#     async def receive(self, text_data):
+#         from users.models import ChatUser
+#         from chats.models import ChatMessage
+#         data = json.loads(text_data)
+#         message = data['message']
+
+#         receiver = await ChatUser.objects.aget(id=self.receiver_id)
+
+#         # Step 1: Save message with 'sent' status
+#         chat_message = await ChatMessage.objects.acreate(
+#             sender=self.sender,
+#             receiver=receiver,
+#             content=message,
+#             message_type='text',
+#             status='sent',
+#             created_at=timezone.now()
+#         )
+        
+#         sent_payload = {
+#             "success": True,
+#             "message": "Message Sent successfully",
+#             "data": {
+#                 "content": message,
+#                 "message_id": chat_message.id,
+#                 "sender_id": self.sender.id,
+#                 "receiver_id": receiver.id,
+#                 "timestamp": str(chat_message.created_at),
+#                 "status": "sent"
+#             }
+#         }
+
+#         # Step 2: Broadcast message to shared room
+#         await self.channel_layer.group_send(
+#             self.room_group_name,
+#             {
+#                 'type': 'chat_message',
+#                 'payload': sent_payload
+#             }
+#         )
+
+        
+        
+#         # Step 3: Notify receiver via personal channel
+#         await self.channel_layer.group_send(
+#             f"user_{receiver.id}",
+#             {
+#                 'type': 'chat_message',
+#                 'payload': sent_payload
+#             }
+#         )
+
+#         # Step 4: Check if receiver is in the room
+#         receiver_in_room = await self.is_user_in_room(receiver.id, self.presence_goup_name)
+
+#         if receiver_in_room:
+#             # Update DB status to 'seen'
+#             await ChatMessage.objects.filter(id=chat_message.id).aupdate(status='seen')
+            
+#             status_payload = {
+#             "success": True,
+#             "message": "Status Updated",
+#             "data": {
+#                 'message_id': chat_message.id,
+#                 'status': 'seen',
+#                 'receiver_id': receiver.id,
+#                 'timestamp': str(timezone.now())
+#             }
+#         }
+#             # Notify sender of 'seen' status
+#             await self.channel_layer.group_send(
+#                 f"user_{self.sender.id}",
+#                 {
+#                     'type': 'message_status',
+#                     'payload': status_payload
+#                 }
+#             )
+
+#     async def chat_message(self, event):
+#         await self.send(text_data=json.dumps(event["payload"]))
+
+#     async def message_status(self, event):
+#         await self.send(text_data=json.dumps(event["payload"]))
+
+#     async def is_user_in_room(self, user_id, room_name):
+#         from utils.redis_client import redis_client
+#         return await redis_client.sismember(f"room:{room_name}:users", user_id)
+
+
+
+
+# class UserChannelConsumer(AsyncWebsocketConsumer):
+#     async def connect(self):
+#         self.user_id = int(self.scope['url_route']['kwargs']['user_id'])
+#         self.user = self.scope['user']
+
+#         await self.accept()
+#         if self.user is None or self.user.is_anonymous or self.user.id != self.user_id:
+#             await self.send(text_data=json.dumps({
+#                 "success": False,
+#                 "message": "Authentication failed",
+#                 "errors": {"token": ["Invalid or missing access token"]}
+#             }))
+#             await self.close(code=4001)
+#             return
+
+#         self.room_group_name = f"user_{self.user_id}"
+#         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+
+#     async def disconnect(self, close_code):
+#         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+
+
+
+
 import json
+from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.utils import timezone
 
 
-class ChatConsumer(AsyncWebsocketConsumer):
+class UserSocketConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.receiver_id = self.scope['url_route']['kwargs']['receiver_id']
-        self.sender = self.scope['user']
-        await self.accept()
+        from utils.redis_client import redis_client
+        self.user = self.scope['user']
+        query_params = parse_qs(self.scope['query_string'].decode())
+        self.access_token = query_params.get('access_token', [None])[0]
+        self.tab_id = query_params.get('tab_id', [None])[0] or "mobile"
 
-        if self.sender is None or self.sender.is_anonymous:
+        # Fallback for mobile clients
+        self.tab_id = self.tab_id or "mobile"
+
+        if self.user is None or self.user.is_anonymous:
+            await self.accept()
             await self.send(text_data=json.dumps({
+                "type": "auth_error",
                 "success": False,
                 "message": "Authentication failed",
-                "errors": {"token": ["Invalid or missing access token"]}
+                "errors": {
+                    "access_token": ["Missing or invalid"],
+                    "tab_id": ["Missing or defaulted to mobile"]
+                }
             }))
-            await self.close(code=4001)
+            await self.close(code=4002)
             return
 
-        self.room_name = f"chat_{min(self.sender.id, int(self.receiver_id))}_{max(self.sender.id, int(self.receiver_id))}"
-        self.room_group_name = f"chat_{self.room_name}"
-
+        self.room_group_name = f"user_{self.user.id}"
+        await self.accept()
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
 
-        # Mark sender as present in Redis (or in-memory store)
-        self.presence_goup_name = f"presence_{self.room_group_name}"
-        await self.channel_layer.group_send(
-            self.presence_goup_name,
-            {
-                "type": "user_joined",
-                "user_id": self.sender.id
-            }
-        )
+        # Track tab/device presence
+        tab_key = f"{self.access_token}:{self.tab_id}"
+        await redis_client.sadd(f"user:{self.user.id}:active_tabs", tab_key)
+
+        tab_count = await redis_client.scard(f"user:{self.user.id}:active_tabs")
+        if tab_count == 1:
+            await redis_client.sadd("online_users", self.user.id)
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "presence_event",
+                    "payload": {
+                        "type": "presence_update",
+                        "user_id": self.user.id,
+                        "status": "online"
+                    }
+                }
+            )
 
     async def disconnect(self, close_code):
-        if hasattr(self, "room_group_name"):
-            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        from utils.redis_client import redis_client
+        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+        tab_key = f"{self.access_token}:{self.tab_id}"
+        await redis_client.srem(f"user:{self.user.id}:active_tabs", tab_key)
+
+        # Clean up any open thread for this tab/device
+        await redis_client.delete(f"user:{self.user.id}:access:{self.access_token}:tab:{self.tab_id}:active_thread")
+
+        tab_count = await redis_client.scard(f"user:{self.user.id}:active_tabs")
+        if tab_count == 0:
+            await redis_client.srem("online_users", self.user.id)
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "presence_event",
+                    "payload": {
+                        "type": "presence_update",
+                        "user_id": self.user.id,
+                        "status": "offline"
+                    }
+                }
+            )
 
     async def receive(self, text_data):
         from users.models import ChatUser
         from chats.models import ChatMessage
+        from utils.redis_client import redis_client
+  
+
         data = json.loads(text_data)
-        message = data['message']
+        event_type = data.get("type")
 
-        receiver = await ChatUser.objects.aget(id=self.receiver_id)
+        # Use tab_id fallback for mobile
+        tab_id = self.tab_id or "mobile"
+        access_token = self.access_token
 
-        # Step 1: Save message with 'sent' status
-        chat_message = await ChatMessage.objects.acreate(
-            sender=self.sender,
-            receiver=receiver,
-            content=message,
-            message_type='text',
-            status='sent',
-            created_at=timezone.now()
-        )
-        
-        sent_payload = {
-            "success": True,
-            "message": "Message Sent successfully",
-            "data": {
-                "content": message,
-                "message_id": chat_message.id,
-                "sender_id": self.sender.id,
-                "receiver_id": receiver.id,
-                "timestamp": str(chat_message.created_at),
-                "status": "sent"
-            }
-        }
+        if event_type == "chat_message":
+            message = data.get("message")
+            receiver_id = data.get("receiver_id")
+            if not message or not receiver_id:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "success": False,
+                    "message": "Invalid payload"
+                }))
+                return
 
-        # Step 2: Broadcast message to shared room
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'chat_message',
-                'payload': sent_payload
-            }
-        )
+            receiver = await ChatUser.objects.aget(id=receiver_id)
 
-        
-        
-        # Step 3: Notify receiver via personal channel
-        await self.channel_layer.group_send(
-            f"user_{receiver.id}",
-            {
-                'type': 'chat_message',
-                'payload': sent_payload
-            }
-        )
-
-        # Step 4: Check if receiver is in the room
-        receiver_in_room = await self.is_user_in_room(receiver.id, self.presence_goup_name)
-
-        if receiver_in_room:
-            # Update DB status to 'seen'
-            await ChatMessage.objects.filter(id=chat_message.id).aupdate(status='seen')
-            
-            status_payload = {
-            "success": True,
-            "message": "Status Updated",
-            "data": {
-                'message_id': chat_message.id,
-                'status': 'seen',
-                'receiver_id': receiver.id,
-                'timestamp': str(timezone.now())
-            }
-        }
-            # Notify sender of 'seen' status
-            await self.channel_layer.group_send(
-                f"user_{self.sender.id}",
-                {
-                    'type': 'message_status',
-                    'payload': status_payload
-                }
+            chat_message = await ChatMessage.objects.acreate(
+                sender=self.user,
+                receiver=receiver,
+                content=message,
+                message_type='text',
+                status='sent',
+                created_at=timezone.now()
             )
 
-    async def chat_message(self, event):
+            payload = {
+                "type": "chat_message",
+                "success": True,
+                "message": "Message sent",
+                "data": {
+                    "message_id": chat_message.id,
+                    "content": message,
+                    "sender_id": self.user.id,
+                    "receiver_id": receiver.id,
+                    "timestamp": str(chat_message.created_at),
+                    "status": "sent"
+                }
+            }
+
+            await self.channel_layer.group_send(f"user_{receiver.id}", {
+                "type": "chat_event",
+                "payload": payload
+            })
+
+            await self.channel_layer.group_send(f"user_{self.user.id}", {
+                "type": "chat_event",
+                "payload": payload
+            })
+
+            # Seen logic
+            receiver_online = await redis_client.sismember("online_users", receiver.id)
+            pattern = f"user:{receiver.id}:access:*:tab:*:active_thread"
+            keys = await redis_client.keys(pattern)
+            values = await redis_client.mget(*keys) if keys else []
+            decoded = [v.decode() for v in values if v]
+            is_viewing = str(self.user.id) in decoded
+
+            if receiver_online:
+                if is_viewing:
+                    await ChatMessage.objects.filter(id=chat_message.id).aupdate(status='seen')
+                    status_payload = {
+                        "type": "message_status",
+                        "success": True,
+                        "message": "Message seen",
+                        "data": {
+                            "message_id": chat_message.id,
+                            "status": "seen",
+                            "receiver_id": receiver.id,
+                            "timestamp": str(timezone.now())
+                        }
+                    }
+                    await self.channel_layer.group_send(f"user_{self.user.id}", {
+                        "type": "status_event",
+                        "payload": status_payload
+                    })
+                else:
+                    unseen_count = await ChatMessage.objects.filter(
+                        sender_id=self.user.id,
+                        receiver_id=receiver.id,
+                        status='sent'
+                    ).acount()
+
+                    last_message = await ChatMessage.objects.filter(
+                        sender_id=self.user.id,
+                        receiver_id=receiver.id
+                    ).order_by('-created_at').afirst()
+
+                    summary_payload = {
+                        "type": "chat_summary",
+                        "success": True,
+                        "message": "Unread message summary",
+                        "data": {
+                            "sender_id": self.user.id,
+                            "receiver_id": receiver.id,
+                            "unread_count": unseen_count,
+                            "last_message": {
+                                "message_id": last_message.id,
+                                "content": last_message.content,
+                                "timestamp": str(last_message.created_at)
+                            }
+                        }
+                    }
+
+                    await self.channel_layer.group_send(f"user_{receiver.id}", {
+                        "type": "chat_event",
+                        "payload": summary_payload
+                    })
+
+        elif event_type == "chat_typing":
+            receiver_id = data.get("receiver_id")
+            if receiver_id:
+                typing_payload = {
+                    "type": "typing_indicator",
+                    "success": True,
+                    "data": {
+                        "sender_id": self.user.id,
+                        "receiver_id": receiver_id,
+                        "timestamp": str(timezone.now())
+                    }
+                }
+                await self.channel_layer.group_send(f"user_{receiver_id}", {
+                    "type": "chat_event",
+                    "payload": typing_payload
+                })
+
+        elif event_type == "chat_open":
+            partner_id = data.get("partner_id")
+            if partner_id and access_token and tab_id:
+                redis_key = f"user:{self.user.id}:access:{access_token}:tab:{tab_id}:active_thread"
+                await redis_client.set(redis_key, str(partner_id), ex=30)
+
+                await ChatMessage.objects.filter(
+                    sender_id=partner_id,
+                    receiver_id=self.user.id,
+                    status__in=["sent", "delivered"]
+                ).aupdate(status="seen")
+
+                seen_messages = await ChatMessage.objects.filter(
+                    sender_id=partner_id,
+                    receiver_id=self.user.id,
+                    status="seen"
+                ).values("id", "sender_id")
+
+                seen_payload = {
+                    "type": "message_status_batch",
+                    "success": True,
+                    "message": "Messages marked as seen",
+                    "data": [
+                        {
+                            "message_id": msg["id"],
+                            "sender_id": msg["sender_id"],
+                            "status": "seen"
+                        }
+                        for msg in seen_messages
+                    ]
+                }
+
+                await self.channel_layer.group_send(f"user_{self.user.id}", {
+                    "type": "status_event",
+                    "payload": seen_payload
+                })
+
+                await self.send(text_data=json.dumps({
+                    "type": "chat_open_ack",
+                    "success": True,
+                    "message": "Chat opened"
+                }))
+
+        elif event_type == "chat_close":
+            partner_id = data.get("partner_id")
+            if access_token and tab_id:
+                redis_key = f"user:{self.user.id}:access:{access_token}:tab:{tab_id}:active_thread"
+                current = await redis_client.get(redis_key)
+                if current and current.decode() == str(partner_id):
+                    await redis_client.delete(redis_key)
+
+                await self.send(text_data=json.dumps({
+                    "type": "chat_close_ack",
+                    "success": True,
+                    "message": "Chat closed"
+                }))
+
+        elif event_type == "heartbeat":
+            if access_token and tab_id:
+                redis_key = f"user:{self.user.id}:access:{access_token}:tab:{tab_id}:active_thread"
+                await redis_client.expire(redis_key, 30)
+
+    async def chat_event(self, event):
         await self.send(text_data=json.dumps(event["payload"]))
 
-    async def message_status(self, event):
+    async def status_event(self, event):
         await self.send(text_data=json.dumps(event["payload"]))
 
-    async def is_user_in_room(self, user_id, room_name):
-        from utils.redis_client import redis_client
-        return await redis_client.sismember(f"room:{room_name}:users", user_id)
-
-
-
-
-class UserChannelConsumer(AsyncWebsocketConsumer):
-    async def connect(self):
-        self.user_id = int(self.scope['url_route']['kwargs']['user_id'])
-        self.user = self.scope['user']
-
-        await self.accept()
-        if self.user is None or self.user.is_anonymous or self.user.id != self.user_id:
-            await self.send(text_data=json.dumps({
-                "success": False,
-                "message": "Authentication failed",
-                "errors": {"token": ["Invalid or missing access token"]}
-            }))
-            await self.close(code=4001)
-            return
-
-        self.room_group_name = f"user_{self.user_id}"
-        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-
-    async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+    async def presence_event(self, event):
+        await self.send(text_data=json.dumps(event["payload"]))
 
