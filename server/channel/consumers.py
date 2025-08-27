@@ -260,6 +260,98 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
                         "type": "chat_event",
                         "payload": summary_payload
                     })
+            
+        
+        elif event_type == "message_edit":
+            message_id = data.get("message_id")
+            new_content = data.get("new_content")
+
+            if not message_id or new_content is None:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "success": False,
+                    "message": "Missing message_id or new_content"
+                }))
+                return
+
+            message = await ChatMessage.objects.filter(id=message_id, sender=self.user).afirst()
+            if not message:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "success": False,
+                    "message": "Message not found or unauthorized"
+                }))
+                return
+
+            message.content = new_content
+            await sync_to_async(message.save)()
+
+            edit_payload = {
+                "type": "message_edit",
+                "success": True,
+                "message": "Message updated",
+                "data": {
+                    "receiver_id": message.receiver.id,
+                    "sender_id": self.user.id,
+                    "message_id": message.id,
+                    "new_content": message.content,
+                    "timestamp": str(message.updated_at)
+                }
+            }
+
+            # Notify both sender and receiver
+            await self.channel_layer.group_send(f"user_{message.receiver.id}", {
+                "type": "chat_event",
+                "payload": edit_payload
+            })
+            await self.channel_layer.group_send(f"user_{self.user.id}", {
+                "type": "chat_event",
+                "payload": edit_payload
+            })
+        
+        elif event_type == "message_delete":
+            message_id = data.get("message_id")
+
+            if not message_id:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "success": False,
+                    "message": "Missing message_id"
+                }))
+                return
+
+            message = await ChatMessage.objects.filter(id=message_id, sender=self.user).afirst()
+            if not message:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "success": False,
+                    "message": "Message not found or unauthorized"
+                }))
+                return
+
+            message.is_deleted = True
+            await sync_to_async(message.save)()
+
+            delete_payload = {
+                "type": "message_delete",
+                "success": True,
+                "message": "Message deleted",
+                "data": {
+                    "receiver_id": message.receiver.id,
+                    "sender_id": self.user.id,
+                    "message_id": message.id,
+                    "timestamp": str(message.updated_at)
+                }
+            }
+
+            await self.channel_layer.group_send(f"user_{message.receiver.id}", {
+                "type": "chat_event",
+                "payload": delete_payload
+            })
+            await self.channel_layer.group_send(f"user_{self.user.id}", {
+                "type": "chat_event",
+                "payload": delete_payload
+            })
 
         elif event_type == "chat_typing":
             receiver_id = data.get("receiver_id")
