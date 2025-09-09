@@ -539,7 +539,6 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     "chat_typing": {"receiver_id": int},
     "chat_open": {"receiver_id": int},
     "chat_close": {"receiver_id": int},
-    # "heartbeat": {} # no required fields
     }
 
 
