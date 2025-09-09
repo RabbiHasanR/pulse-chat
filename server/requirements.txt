@@ -9,8 +9,10 @@ channels-redis==4.2.1
 djangorestframework-simplejwt==5.5.0
 pytest==8.4.1
 pytest-django==4.11.1
+pytest-asyncio==1.1.0
 drf-yasg==1.21.10
 uvicorn[standard]==0.35.0
 gunicorn==23.0.0
 pillow==11.3.0
 django-redis==6.0.0
+daphne==4.2.1

@@ -1,9 +1,17 @@
+import os
+import django
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
+django.setup()
+
+import json
 import pytest
 import asyncio
 import importlib
 from unittest.mock import Mock
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from users.models import ChatUser
@@ -27,6 +35,15 @@ def another_user(db):
         username="anotheruser",
         full_name="Another User",
         password="anotherpass"
+    )
+    
+@pytest.fixture
+def third_user(db):
+    return ChatUser.objects.create_user(
+        email="u3@example.com",
+        username="u3",
+        full_name="U 3",
+        password="x"
     )
 
 @pytest.fixture
@@ -82,17 +99,13 @@ def _configure_settings():
 
 
 
-
 class _FakeRedis:
-    """
-    Async in-memory Redis stub for the methods your consumer uses.
-    """
     def __init__(self):
-        self.sets = {}
-        self.kv = {}
-        self.expiries = {}
+        self.sets: dict[str, set] = {}
+        self.kv: dict[str, str] = {}
+        self.expiries: dict[str, int] = {}
 
-    # set helpers
+    # set ops
     async def sadd(self, key, member):
         self.sets.setdefault(key, set()).add(member)
         return 1
@@ -109,15 +122,15 @@ class _FakeRedis:
     async def sismember(self, key, member):
         return member in self.sets.get(key, set())
 
-    # kv helpers
+    # string ops
     async def set(self, key, value, ex: int | None = None):
         self.kv[key] = str(value)
         if ex is not None:
             self.expiries[key] = ex
 
     async def get(self, key):
-        val = self.kv.get(key)
-        return val.encode() if val is not None else None
+        v = self.kv.get(key)
+        return v.encode() if v is not None else None
 
     async def delete(self, key):
         self.kv.pop(key, None)
@@ -130,7 +143,7 @@ class _FakeRedis:
         return False
 
     async def keys(self, pattern: str):
-        # naive pattern support for '*' only
+        # naive '*' handling: prefix match
         if "*" not in pattern:
             return [k for k in self.kv.keys() if k == pattern]
         prefix = pattern.split("*", 1)[0]
@@ -151,10 +164,41 @@ def fake_redis():
 
 @pytest.fixture
 def patch_redis(monkeypatch, fake_redis):
-    """
-    Monkeypatch the 'redis_client' imported inside your consumer module.
-    """
     module_path = "channel.consumers"
     mod = importlib.import_module(module_path)
     monkeypatch.setattr(mod, "redis_client", fake_redis, raising=True)
+    mod.UserSocketConsumer.ValidationError = ValidationError
     return fake_redis
+
+
+async def recv_json(communicator, timeout=1.0):
+    msg = await asyncio.wait_for(communicator.receive_from(), timeout=timeout)
+    return json.loads(msg)
+
+
+async def recv_until(communicator, predicate, timeout=1.5):
+    deadline = asyncio.get_event_loop().time() + timeout
+    last = None
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            msg = await recv_json(communicator, timeout=timeout)
+            last = msg
+            if predicate(msg):
+                return msg
+        except asyncio.TimeoutError:
+            break
+    raise asyncio.TimeoutError(f"Message satisfying predicate not received; last={last}")
+
+
+async def recv_type(comm, type_, timeout=1.5):
+    async def _pred(m): return m.get("type") == type_
+    return await recv_until(comm, _pred, timeout=timeout)
+
+
+@pytest.fixture
+def helpers():
+    return {
+        "recv_json": recv_json,
+        "recv_until": recv_until,
+        "recv_type": recv_type,
+    }

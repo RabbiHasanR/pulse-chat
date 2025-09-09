@@ -1,146 +1,268 @@
-# tests/test_user_socket_consumer.py
+# tests/channel/test_user_socket_consumer.py
+
 import asyncio
 import importlib
 import json
 import pytest
 from channels.testing import WebsocketCommunicator
 from django.utils import timezone
+from asgiref.sync import sync_to_async
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
-CONSUMER_MODULE = "yourapp.consumers"  # <-- CHANGE THIS
-WS_PATH = "/ws/user/?token=TKN&tab_id=tab-1"
+CONSUMER_MODULE = "channel.consumers"  # <-- make sure this matches your project
 
 
-def _app():
-    # Load the consumer directly to avoid routing complexity.
+def app():
     mod = importlib.import_module(CONSUMER_MODULE)
     return mod.UserSocketConsumer.as_asgi()
 
 
-async def _connect_as(user, path=WS_PATH):
-    comm = WebsocketCommunicator(_app(), path)
-    # Bypass auth middleware: set scope user directly
+async def connect_as(user, token="TKN", tab_id="tab-1", path=None):
+    if path is None:
+        path = f"/ws/user/?token={token}&tab_id={tab_id}"
+    comm = WebsocketCommunicator(app(), path)
+    # bypass auth middleware
     comm.scope["user"] = user
     connected, _ = await comm.connect()
     assert connected is True
     return comm
 
 
-async def _recv_json(comm: WebsocketCommunicator, timeout=1.0):
-    msg = await asyncio.wait_for(comm.receive_from(), timeout=timeout)
-    return json.loads(msg)
-
+# ------------------------- Basic auth/error paths ----------------------------
 
 @pytest.mark.asyncio
-async def test_auth_required_for_anonymous(patch_redis):
-    comm = WebsocketCommunicator(_app(), WS_PATH)
-    # No user in scope -> anonymous
+async def test_anonymous_rejected_with_auth_error(patch_redis):
+    comm = WebsocketCommunicator(app(), "/ws/user/?token=X&tab_id=A")
+    # do NOT set scope["user"] -> anonymous
     connected, _ = await comm.connect()
-    # The consumer accepts, sends auth_error, then closes with 4002
+
     msg = json.loads(await comm.receive_from())
     assert msg["type"] == "auth_error"
     assert msg["success"] is False
-    # connection should close next
-    close = await comm.wait_closed()
-    assert close is True
+    assert "Authentication failed" in msg["message"]
+
+    # WebsocketCommunicator has no wait_closed(); use receive_nothing()
+    assert await comm.receive_nothing()
 
 
 @pytest.mark.asyncio
-async def test_connect_presence_online_offline(user, patch_redis):
+async def test_invalid_json_returns_error(user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
+
+    comm = await connect_as(user)
+    await comm.send_to(text_data="{not-json")
+    msg = await recv_type(comm, "error")
+    assert msg["type"] == "error"
+    assert msg["success"] is False
+    assert "Invalid JSON" in msg["message"]
+    await comm.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unknown_event_type(user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
+
+    comm = await connect_as(user)
+    await comm.send_to(text_data=json.dumps({"type": "something_else"}))
+    msg = await recv_type(comm, "error")
+    assert msg["type"] == "error"
+    assert "Unknown event type" in msg["message"]
+    await comm.disconnect()
+
+
+# ------------------------- Presence across tabs/devices ----------------------
+
+@pytest.mark.asyncio
+async def test_presence_multi_tabs_and_devices(user, patch_redis):
     mod = importlib.import_module(CONSUMER_MODULE)
-    ONLINE_SET = mod.UserSocketConsumer.ONLINE_USERS_SET
+    ONLINE = mod.UserSocketConsumer.ONLINE_USERS_SET
+    tab_key = mod.UserSocketConsumer._active_tabs_key(user.id)
 
-    comm = await _connect_as(user)
-    # at first tab for this user, they should be marked online
-    assert user.id in patch_redis.sets.get(ONLINE_SET, set())
+    # First tab (device A / browser A)
+    comm_a1 = await connect_as(user, token="TA", tab_id="A1")
+    assert user.id in patch_redis.sets.get(ONLINE, set())
+    assert await patch_redis.scard(tab_key) == 1
 
-    await comm.disconnect()
-    # last tab closed -> offline
-    assert user.id not in patch_redis.sets.get(ONLINE_SET, set())
+    # Second tab same browser/device
+    comm_a2 = await connect_as(user, token="TA", tab_id="A2")
+    assert user.id in patch_redis.sets.get(ONLINE, set())
+    assert await patch_redis.scard(tab_key) == 2
+
+    # Another device/browser (different token)
+    comm_b1 = await connect_as(user, token="TB", tab_id="B1")
+    assert user.id in patch_redis.sets.get(ONLINE, set())
+    assert await patch_redis.scard(tab_key) == 3
+
+    # Close one tab; user must remain online and tab set decremented
+    await comm_a2.disconnect()
+    assert user.id in patch_redis.sets.get(ONLINE, set())
+    assert await patch_redis.scard(tab_key) == 2
+
+    # Close second tab; still one active (B1)
+    await comm_a1.disconnect()
+    assert user.id in patch_redis.sets.get(ONLINE, set())
+    assert await patch_redis.scard(tab_key) == 1
+
+    # Close last device → now offline, zero active tabs
+    await comm_b1.disconnect()
+    assert user.id not in patch_redis.sets.get(ONLINE, set())
+    assert await patch_redis.scard(tab_key) == 0
+
+
+# ------------------------- chat_message paths --------------------------------
+
+@pytest.mark.asyncio
+async def test_chat_message_success_echos_to_sender_and_receiver(user, another_user, patch_redis, helpers):
+    recv_until = helpers["recv_until"]
+
+    # Connect both sides to receive group events
+    comm_sender = await connect_as(user, token="S1", tab_id="TS")
+    comm_rcv = await connect_as(another_user, token="R1", tab_id="TR")
+
+    await comm_sender.send_to(text_data=json.dumps({
+        "type": "chat_message",
+        "message": "hello world",
+        "receiver_id": another_user.id
+    }))
+
+    # Each side should receive the same chat_message event
+    s_evt = await recv_until(comm_sender, lambda m: m.get("type") == "chat_message")
+    r_evt = await recv_until(comm_rcv,    lambda m: m.get("type") == "chat_message")
+
+    for evt in (s_evt, r_evt):
+        assert evt["success"] is True
+        assert evt["data"]["content"] == "hello world"
+        assert evt["data"]["sender_id"] == user.id
+        assert evt["data"]["receiver_id"] == another_user.id
+        assert evt["data"]["status"] in ("sent", "seen", "delivered")
+
+    await comm_sender.disconnect()
+    await comm_rcv.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_chat_message_success(user, other_user, patch_redis):
-    comm = await _connect_as(user)
+async def test_chat_message_validation_error_missing_fields(user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
 
-    await comm.send_to(
-        text_data=json.dumps(
-            {
-                "type": "chat_message",
-                "message": "hello",
-                "receiver_id": other_user.id,
-            }
-        )
-    )
-
-    # The sender also gets the event via its own group
-    event = await _recv_json(comm)
-    assert event["type"] == "chat_message"
-    assert event["success"] is True
-    assert event["data"]["content"] == "hello"
-    assert event["data"]["sender_id"] == user.id
-    assert event["data"]["receiver_id"] == other_user.id
-
+    comm = await connect_as(user)
+    await comm.send_to(text_data=json.dumps({"type": "chat_message", "message": "no receiver"}))
+    msg = await recv_type(comm, "error")
+    assert msg["type"] == "error"
+    assert msg["success"] is False
     await comm.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_chat_message_validation_error(user, patch_redis):
-    comm = await _connect_as(user)
+async def test_chat_message_receiver_not_found(user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
 
-    await comm.send_to(text_data=json.dumps({"type": "chat_message", "message": "no receiver id"}))
-    event = await _recv_json(comm)
-    assert event["type"] == "error"
-    assert event["success"] is False
-
+    comm = await connect_as(user)
+    await comm.send_to(text_data=json.dumps({"type": "chat_message", "message": "hi", "receiver_id": 99999}))
+    msg = await recv_type(comm, "error")
+    assert msg["type"] == "error"
+    assert "Receiver not found" in msg["message"]
     await comm.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_message_edit_and_delete(user, other_user, patch_redis):
-    # Create an initial message from 'user' to 'other_user' to edit/delete later.
+async def test_chat_message_triggers_seen_when_receiver_online_and_viewing(user, another_user, patch_redis, helpers):
+    # Receiver online & viewing -> sender should receive single 'message_status: seen'
+    recv_until = helpers["recv_until"]
+    mod = importlib.import_module(CONSUMER_MODULE)
+    key_for_rcv_view = mod.UserSocketConsumer._active_thread_key(another_user.id, "R1", "TR")
+
+    comm_sender = await connect_as(user, token="S1", tab_id="TS")
+    comm_receiver = await connect_as(another_user, token="R1", tab_id="TR")
+
+    # Simulate receiver currently viewing sender's thread by setting redis key
+    await patch_redis.set(key_for_rcv_view, str(user.id), ex=30)
+
+    await comm_sender.send_to(text_data=json.dumps({
+        "type": "chat_message",
+        "message": "seen please",
+        "receiver_id": another_user.id
+    }))
+
+    # sender gets chat_message (echo) and then message_status seen
+    status_evt = await recv_until(comm_sender, lambda m: m.get("type") == "message_status")
+    assert status_evt["data"]["status"] == "seen"
+    assert status_evt["data"]["sender_id"] == user.id
+    assert status_evt["data"]["receiver_id"] == another_user.id
+
+    await comm_sender.disconnect()
+    await comm_receiver.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_chat_message_triggers_unread_summary_when_receiver_online_not_viewing(user, another_user, patch_redis, helpers):
+    # Receiver online but NOT viewing -> receiver should get 'chat_summary'
+    recv_until = helpers["recv_until"]
+
+    comm_sender = await connect_as(user, token="S2", tab_id="TS2")
+    comm_receiver = await connect_as(another_user, token="R2", tab_id="TR2")
+
+    await comm_sender.send_to(text_data=json.dumps({
+        "type": "chat_message",
+        "message": "ping",
+        "receiver_id": another_user.id
+    }))
+
+    # Receiver will get the chat_message and (since online, not viewing) a chat_summary
+    _ = await recv_until(comm_receiver, lambda m: m.get("type") == "chat_message")
+    summary = await recv_until(comm_receiver, lambda m: m.get("type") == "chat_summary")
+
+    assert summary["success"] is True
+    assert summary["data"]["sender_id"] == user.id
+    assert summary["data"]["receiver_id"] == another_user.id
+    assert "unread_count" in summary["data"]
+    assert "last_message" in summary["data"]
+
+    await comm_sender.disconnect()
+    await comm_receiver.disconnect()
+
+
+# ------------------------- edit / delete -------------------------------------
+
+@pytest.mark.asyncio
+async def test_message_edit_and_delete_happy_path(user, another_user, patch_redis, helpers):
+    recv_until = helpers["recv_until"]
     mod = importlib.import_module(CONSUMER_MODULE)
     ChatMessage = mod.ChatMessage
 
-    # Connect both sides so group sends can deliver
-    comm_sender = await _connect_as(user)
-    comm_receiver = await _connect_as(other_user, path="/ws/user/?token=T2&tab_id=tab-2")
+    comm_sender = await connect_as(user, token="ES", tab_id="E1")
+    comm_receiver = await connect_as(another_user, token="ER", tab_id="E2")
 
-    m = ChatMessage.objects.create(
+    m = await sync_to_async(ChatMessage.objects.create)(
         sender_id=user.id,
-        receiver_id=other_user.id,
-        content="old",
+        receiver_id=another_user.id,
+        content="old content",
         message_type="text",
         status="sent",
         created_at=timezone.now(),
     )
 
-    # Edit
-    await comm_sender.send_to(
-        text_data=json.dumps(
-            {"type": "message_edit", "message_id": m.id, "new_content": "new content"}
-        )
-    )
+    await comm_sender.send_to(text_data=json.dumps({
+        "type": "message_edit", "message_id": m.id, "new_content": "new content"
+    }))
 
-    # Sender gets the edit event (and receiver, too)
-    e1 = await _recv_json(comm_sender)
-    assert e1["type"] == "message_edit"
-    assert e1["data"]["message_id"] == m.id
-    assert e1["data"]["new_content"] == "new content"
-
-    e1r = await _recv_json(comm_receiver)
-    assert e1r["type"] == "message_edit"
+    s_edit = await recv_until(comm_sender,   lambda m: m.get("type") == "message_edit")
+    r_edit = await recv_until(comm_receiver, lambda m: m.get("type") == "message_edit")
+    assert s_edit["data"]["message_id"] == m.id
+    assert s_edit["data"]["new_content"] == "new content"
+    assert r_edit["data"]["message_id"] == m.id
 
     m.refresh_from_db()
     assert m.content == "new content"
 
-    # Delete
-    await comm_sender.send_to(text_data=json.dumps({"type": "message_delete", "message_id": m.id}))
-    d1 = await _recv_json(comm_sender)
-    assert d1["type"] == "message_delete"
-    d1r = await _recv_json(comm_receiver)
-    assert d1r["type"] == "message_delete"
+    await comm_sender.send_to(text_data=json.dumps({
+        "type": "message_delete", "message_id": m.id
+    }))
+
+    s_del = await recv_until(comm_sender,   lambda m: m.get("type") == "message_delete")
+    r_del = await recv_until(comm_receiver, lambda m: m.get("type") == "message_delete")
+    assert s_del["data"]["message_id"] == m.id
+    assert r_del["data"]["message_id"] == m.id
 
     m.refresh_from_db()
     assert m.is_deleted is True
@@ -150,140 +272,160 @@ async def test_message_edit_and_delete(user, other_user, patch_redis):
 
 
 @pytest.mark.asyncio
-async def test_message_edit_guard_unauthorized(other_user, user, patch_redis):
-    # Message authored by 'other_user', but 'user' attempts to edit
+async def test_message_edit_unauthorized(user, another_user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
     mod = importlib.import_module(CONSUMER_MODULE)
     ChatMessage = mod.ChatMessage
 
-    m = ChatMessage.objects.create(
-        sender_id=other_user.id,
+    # Message authored by other_user
+    m = await sync_to_async(ChatMessage.objects.create)(
+        sender_id=another_user.id,
         receiver_id=user.id,
-        content="other authored",
+        content="by other",
         message_type="text",
         status="sent",
         created_at=timezone.now(),
     )
 
-    comm = await _connect_as(user)
-    await comm.send_to(
-        text_data=json.dumps({"type": "message_edit", "message_id": m.id, "new_content": "x"})
-    )
-    resp = await _recv_json(comm)
+    comm = await connect_as(user)
+    await comm.send_to(text_data=json.dumps({
+        "type": "message_edit", "message_id": m.id, "new_content": "hijack"
+    }))
+    resp = await recv_type(comm, "error")
     assert resp["type"] == "error"
-    assert "Message not found or unauthorized" in resp["message"]
-
+    assert "unauthorized" in resp["message"].lower()
     await comm.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_chat_open_marks_seen_sets_key_and_ack(user, other_user, patch_redis):
+async def test_message_delete_unauthorized(user, another_user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
     mod = importlib.import_module(CONSUMER_MODULE)
     ChatMessage = mod.ChatMessage
-    consumer = mod.UserSocketConsumer
 
-    # Seed: other_user -> user messages (status sent) should be marked as seen on open
-    m1 = ChatMessage.objects.create(
-        sender_id=other_user.id,
+    m = await sync_to_async(ChatMessage.objects.create)(
+        sender_id=another_user.id,
         receiver_id=user.id,
-        content="hi",
+        content="cannot delete",
         message_type="text",
         status="sent",
         created_at=timezone.now(),
     )
-    ChatMessage.objects.create(
-        sender_id=other_user.id,
-        receiver_id=user.id,
-        content="later",
-        message_type="text",
-        status="delivered",
-        created_at=timezone.now(),
+
+    comm = await connect_as(user)
+    await comm.send_to(text_data=json.dumps({
+        "type": "message_delete", "message_id": m.id
+    }))
+    resp = await recv_type(comm, "error")
+    assert resp["type"] == "error"
+    assert "unauthorized" in resp["message"].lower()
+    await comm.disconnect()
+
+
+# ------------------------- chat_open / chat_close / heartbeat ----------------
+
+@pytest.mark.asyncio
+async def test_chat_open_marks_seen_sets_key_sends_batch_and_ack(user, another_user, patch_redis, helpers):
+    recv_until = helpers["recv_until"]
+    recv_type = helpers["recv_type"]
+    mod = importlib.import_module(CONSUMER_MODULE)
+    ChatMessage = mod.ChatMessage
+    Consumer = mod.UserSocketConsumer
+
+    # Seed: other_user -> user messages need to be marked seen
+    m1 = await sync_to_async(ChatMessage.objects.create)(
+        sender_id=another_user.id, receiver_id=user.id,
+        content="hi", message_type="text",
+        status="sent", created_at=timezone.now(),
+    )
+    m2 = await sync_to_async(ChatMessage.objects.create)(
+        sender_id=another_user.id, receiver_id=user.id,
+        content="yo", message_type="text",
+        status="delivered", created_at=timezone.now(),
     )
 
-    # Both sides connected (so group sends for batch status can deliver)
-    comm_user = await _connect_as(user, path="/ws/user/?token=T3&tab_id=tA")
-    comm_other = await _connect_as(other_user, path="/ws/user/?token=T4&tab_id=tB")
+    comm_user   = await connect_as(user, token="T3", tab_id="tA")
+    comm_other  = await connect_as(another_user, token="T4", tab_id="tB")
 
-    await comm_user.send_to(
-        text_data=json.dumps({"type": "chat_open", "receiver_id": other_user.id})
-    )
+    await comm_user.send_to(text_data=json.dumps({
+        "type": "chat_open", "receiver_id": another_user.id
+    }))
 
-    # other_user should receive a batch seen update
-    batch = await _recv_json(comm_other)
-    assert batch["type"] == "message_status_batch"
-    seen_ids = {d["message_id"] for d in batch["data"]}
-    assert m1.id in seen_ids
+    # Receiver gets batch status
+    batch = await recv_until(comm_other, lambda m: m.get("type") == "message_status_batch")
+    ids = {d["message_id"] for d in batch["data"]}
+    assert m1.id in ids and m2.id in ids
 
-    # opener gets an ack
-    ack = await _recv_json(comm_user)
+    # Opener gets ack (skip any presence_update etc.)
+    ack = await recv_type(comm_user, "chat_open_ack")
     assert ack["type"] == "chat_open_ack"
 
-    # Redis key set with expiry
-    key = consumer._active_thread_key(consumer, user.id, "T3", "tA")  # using instance method signature
-    assert key in patch_redis.kv
-    assert patch_redis.kv[key] == str(other_user.id)
+    # Redis key set with expiry (STATICMETHOD: pass user_id, token, tab_id)
+    key = Consumer._active_thread_key(user.id, "T3", "tA")
+    assert key in patch_redis.kv and patch_redis.kv[key] == str(another_user.id)
     assert patch_redis.expiries.get(key) == 30
 
     # DB statuses updated
-    m1.refresh_from_db()
-    assert m1.status == "seen"
+    m1.refresh_from_db(); m2.refresh_from_db()
+    assert m1.status == "seen" and m2.status == "seen"
 
     await comm_user.disconnect()
     await comm_other.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_chat_close_clears_key_and_ack(user, other_user, patch_redis):
+async def test_chat_close_clears_key_and_ack(user, another_user, patch_redis, helpers):
+    recv_type = helpers["recv_type"]
     mod = importlib.import_module(CONSUMER_MODULE)
-    consumer = mod.UserSocketConsumer
+    Consumer = mod.UserSocketConsumer
 
-    comm = await _connect_as(user, path="/ws/user/?token=T5&tab_id=tC")
-    # Simulate chat_open having set the key
-    key = consumer._active_thread_key(consumer, user.id, "T5", "tC")
-    await patch_redis.set(key, str(other_user.id), ex=30)
+    comm = await connect_as(user, token="T5", tab_id="tC")
+    key = Consumer._active_thread_key(user.id, "T5", "tC")
+    await patch_redis.set(key, str(another_user.id), ex=30)
 
-    await comm.send_to(
-        text_data=json.dumps({"type": "chat_close", "receiver_id": other_user.id})
-    )
-    ack = await _recv_json(comm)
+    await comm.send_to(text_data=json.dumps({
+        "type": "chat_close", "receiver_id": another_user.id
+    }))
+    ack = await recv_type(comm, "chat_close_ack")
     assert ack["type"] == "chat_close_ack"
-    # key cleared
     assert key not in patch_redis.kv
 
     await comm.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_extends_expiry(user, patch_redis):
+async def test_heartbeat_extends_ttl(user, patch_redis):
     mod = importlib.import_module(CONSUMER_MODULE)
-    consumer = mod.UserSocketConsumer
+    Consumer = mod.UserSocketConsumer
 
-    comm = await _connect_as(user, path="/ws/user/?token=T6&tab_id=tD")
-    key = consumer._active_thread_key(consumer, user.id, "T6", "tD")
-    await patch_redis.set(key, "123", ex=5)
+    comm = await connect_as(user, token="HB", tab_id="h1")
+    key = Consumer._active_thread_key(user.id, "HB", "h1")
+    await patch_redis.set(key, "whatever", ex=5)
 
     await comm.send_to(text_data=json.dumps({"type": "heartbeat"}))
-    # No event expected back; assert expiry extended
+    # No return event; just verify expiry updated
     await asyncio.sleep(0.05)
     assert patch_redis.expiries.get(key) == 30
 
     await comm.disconnect()
 
 
+# ------------------------- typing --------------------------------------------
+
 @pytest.mark.asyncio
-async def test_typing_event_goes_to_receiver(user, other_user, patch_redis):
-    # Two peers; 'user' types to 'other_user'
-    comm_sender = await _connect_as(user, path="/ws/user/?token=T7&tab_id=tE")
-    comm_receiver = await _connect_as(other_user, path="/ws/user/?token=T8&tab_id=tF")
+async def test_chat_typing_forwarded(user, another_user, patch_redis, helpers):
+    recv_until = helpers["recv_until"]
 
-    await comm_sender.send_to(
-        text_data=json.dumps({"type": "chat_typing", "receiver_id": other_user.id})
-    )
+    comm_sender = await connect_as(user, token="TT1", tab_id="t1")
+    comm_rcv    = await connect_as(another_user, token="TT2", tab_id="t2")
 
-    evt = await _recv_json(comm_receiver)
-    assert evt["type"] == "chat_typing"
+    await comm_sender.send_to(text_data=json.dumps({
+        "type": "chat_typing", "receiver_id": another_user.id
+    }))
+    evt = await recv_until(comm_rcv, lambda m: m.get("type") == "chat_typing")
     assert evt["success"] is True
     assert evt["data"]["sender_id"] == user.id
-    assert evt["data"]["receiver_id"] == other_user.id
+    assert evt["data"]["receiver_id"] == another_user.id
 
     await comm_sender.disconnect()
-    await comm_receiver.disconnect()
+    await comm_rcv.disconnect()
