@@ -582,6 +582,11 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
         if errors:
             raise ValidationError(errors)
         return cleaned
+    
+    
+    def _extract_validation_errors(self, e: ValidationError):
+        # Prefer dict → list → string
+        return getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
 
     async def connect(self):
         self.user = self.scope.get("user")
@@ -645,8 +650,8 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     async def _handle_chat_message(self, data: dict) -> None:
         try:
             v = self._validate_event(data, "chat_message")
-        except self.ValidationError as e:
-            return await self._bad_request("Invalid payload", e.errors)
+        except ValidationError as e:
+            return await self._bad_request("Invalid payload", self._extract_validation_errors(e))
 
 
         message = v["message"]
@@ -688,8 +693,8 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     async def _handle_message_edit(self, data: dict) -> None:
         try:
             v = self._validate_event(data, "message_edit")
-        except self.ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", e.errors)
+        except ValidationError as e:
+            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
 
 
         message_id = v["message_id"]
@@ -712,8 +717,8 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     async def _handle_message_delete(self, data: dict) -> None:
         try:
             v = self._validate_event(data, "message_delete")
-        except self.ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", e.errors)
+        except ValidationError as e:
+            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
 
 
         message_id = v["message_id"]
@@ -735,8 +740,8 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     async def _handle_chat_typing(self, data: dict) -> None:
         try:
             v = self._validate_event(data, "chat_typing")
-        except self.ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", e.errors)
+        except ValidationError as e:
+            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
 
 
         receiver_id = v["receiver_id"]
@@ -760,8 +765,8 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     async def _handle_chat_open(self, data: dict) -> None:
         try:
             v = self._validate_event(data, "chat_open")
-        except self.ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", e.errors)
+        except ValidationError as e:
+            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
 
 
         receiver_id = v["receiver_id"]
@@ -811,8 +816,8 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
     async def _handle_chat_close(self, data: dict) -> None:
         try:
             v = self._validate_event(data, "chat_close")
-        except self.ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", e.errors)
+        except ValidationError as e:
+            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
 
 
         receiver_id = v["receiver_id"]

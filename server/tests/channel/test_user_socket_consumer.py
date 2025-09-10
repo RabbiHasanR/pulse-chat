@@ -43,6 +43,15 @@ async def test_anonymous_rejected_with_auth_error(patch_redis):
     assert "Authentication failed" in msg["message"]
 
     # WebsocketCommunicator has no wait_closed(); use receive_nothing()
+    # assert await comm.receive_nothing()
+    
+    # Your app likely queued a `websocket.close` event after the error message.
+    close = await comm.receive_output(timeout=1.0)
+    assert close["type"] == "websocket.close"
+    # Optionally assert a specific close code if you set one, e.g. 4401
+    # assert close.get("code") == 4401
+
+    # Now the queue should be empty.
     assert await comm.receive_nothing()
 
 

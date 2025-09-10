@@ -189,10 +189,22 @@ async def recv_until(communicator, predicate, timeout=1.5):
             break
     raise asyncio.TimeoutError(f"Message satisfying predicate not received; last={last}")
 
-
 async def recv_type(comm, type_, timeout=1.5):
-    async def _pred(m): return m.get("type") == type_
-    return await recv_until(comm, _pred, timeout=timeout)
+    deadline = asyncio.get_event_loop().time() + timeout
+    last = None
+    while asyncio.get_event_loop().time() < deadline:
+        per = max(0.01, min(0.2, deadline - asyncio.get_event_loop().time()))
+        try:
+            raw = await asyncio.wait_for(comm.receive_from(), timeout=per)
+            msg = json.loads(raw)
+            last = msg
+            if msg.get("type") == type_:
+                return msg
+        except asyncio.TimeoutError:
+            # spin until overall deadline
+            pass
+    raise asyncio.TimeoutError(f"Did not receive type={type_}; last={last}")
+
 
 
 @pytest.fixture
