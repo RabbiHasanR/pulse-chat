@@ -711,7 +711,7 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
         await sync_to_async(message.save)()
 
         payload = self._build_message_edit_payload(message)
-        await self._group_send(self._room(message.receiver.id), "forward_event", payload)
+        await self._group_send(self._room(message.receiver_id), "forward_event", payload)
         await self._group_send(self._room(self.user.id), "forward_event", payload)
 
     async def _handle_message_delete(self, data: dict) -> None:
@@ -734,7 +734,7 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
         await sync_to_async(message.save)()
 
         payload = self._build_message_delete_payload(message)
-        await self._group_send(self._room(message.receiver.id), "forward_event", payload)
+        await self._group_send(self._room(message.receiver_id), "forward_event", payload)
         await self._group_send(self._room(self.user.id), "forward_event", payload)
 
     async def _handle_chat_typing(self, data: dict) -> None:

@@ -261,7 +261,7 @@ async def test_message_edit_and_delete_happy_path(user, another_user, patch_redi
     assert s_edit["data"]["new_content"] == "new content"
     assert r_edit["data"]["message_id"] == m.id
 
-    m.refresh_from_db()
+    await sync_to_async(m.refresh_from_db)()
     assert m.content == "new content"
 
     await comm_sender.send_to(text_data=json.dumps({
@@ -273,7 +273,7 @@ async def test_message_edit_and_delete_happy_path(user, another_user, patch_redi
     assert s_del["data"]["message_id"] == m.id
     assert r_del["data"]["message_id"] == m.id
 
-    m.refresh_from_db()
+    await sync_to_async(m.refresh_from_db)()
     assert m.is_deleted is True
 
     await comm_sender.disconnect()
@@ -375,7 +375,8 @@ async def test_chat_open_marks_seen_sets_key_sends_batch_and_ack(user, another_u
     assert patch_redis.expiries.get(key) == 30
 
     # DB statuses updated
-    m1.refresh_from_db(); m2.refresh_from_db()
+    await sync_to_async(m1.refresh_from_db)()
+    await sync_to_async(m2.refresh_from_db)()
     assert m1.status == "seen" and m2.status == "seen"
 
     await comm_user.disconnect()
