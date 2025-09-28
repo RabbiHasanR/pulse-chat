@@ -11,7 +11,7 @@ class PrepareUploadIn(serializers.Serializer):
     file_name = serializers.CharField(required=False)
     file_size = serializers.IntegerField(required=False, min_value=1)
     content_type = serializers.CharField(required=False)
-    message_type = serializers.ChoiceField(choices=['image','video','file'], required=False)
+    message_type = serializers.ChoiceField(choices=['image', 'video', 'file', 'audio'], required=False)
     receiver_id = serializers.IntegerField(required=False, min_value=1)
 
     client_part_size = serializers.IntegerField(required=False, min_value=MIN_PART_SIZE, max_value=MAX_PART_SIZE)
@@ -63,14 +63,24 @@ class PrepareUploadIn(serializers.Serializer):
         return d
 
 
-class CompleteMultipartIn(serializers.Serializer):
-    upload_id = serializers.CharField()
+
+    
+
+class CompleteUploadIn(serializers.Serializer):
     object_key = serializers.CharField()
+    upload_id = serializers.CharField(required=False)
     parts = serializers.ListField(
-        child=serializers.DictField(), allow_empty=False
-    )  # [{"PartNumber":1,"ETag":"\"abc...\""}, ...]
+        child=serializers.DictField(), required=False
+    )
 
+    def validate(self, data):
+        parts = data.get("parts")
+        upload_id = data.get("upload_id")
 
-class CompleteDirectIn(serializers.Serializer):
-    object_key = serializers.CharField()
-    # (optional) you can allow client to send checksum, etc.
+        if parts and not upload_id:
+            raise serializers.ValidationError("upload_id is required when completing multipart upload.")
+
+        if upload_id and not parts:
+            raise serializers.ValidationError("parts are required when completing multipart upload.")
+
+        return data
