@@ -210,3 +210,16 @@ class MediaAsset(models.Model):
 
     def __str__(self):
         return f"{self.kind} | {self.file_name or self.object_key}"
+    
+    
+    @property
+    def url(self):
+        if self.processing_status != "done":
+            return None
+        
+        from utils.aws import s3, AWS_BUCKET
+        return s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": self.bucket, "Key": self.object_key},
+            ExpiresIn=3600
+        )
