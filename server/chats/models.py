@@ -223,3 +223,22 @@ class MediaAsset(models.Model):
             Params={"Bucket": self.bucket, "Key": self.object_key},
             ExpiresIn=3600
         )
+        
+    
+    @property
+    def thumbnail_url(self):
+        from utils.aws import s3
+    
+        thumb_key = self.variants.get("thumbnail")
+
+        if thumb_key:
+            return s3.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": self.bucket, "Key": thumb_key},
+                ExpiresIn=3600
+            )
+
+        if self.kind == "image":
+            return self.url
+            
+        return None
