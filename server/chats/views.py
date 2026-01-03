@@ -12,6 +12,8 @@ from .serializers import (
     DIRECT_THRESHOLD, 
     MAX_BATCH_COUNT,
     CompleteUploadIn,
+    DEFAULT_EXPIRES_DIRECT,
+    DEFAULT_EXPIRES_PART
 )
 from background_worker.chats.tasks import notify_message_event, process_uploaded_asset
 

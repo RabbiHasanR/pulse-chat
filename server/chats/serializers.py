@@ -6,6 +6,9 @@ MAX_PARTS     = 10_000                 # S3 limit
 DIRECT_THRESHOLD = 10 * 1024 * 1024    # 10MB
 MAX_BATCH_COUNT  = 500
 
+DEFAULT_EXPIRES_DIRECT = 300  # 5 minutes (Enough for small files)
+DEFAULT_EXPIRES_PART = 3600   # 1 hour (Needed for large 5GB+ uploads)
+
 class PrepareUploadIn(serializers.Serializer):
     # first call
     file_name = serializers.CharField(required=False)
