@@ -84,18 +84,28 @@ class ImageProcessor(BaseProcessor):
 
     def _resize_and_compress(self, img: Image, max_dim: int):
         """
-        Helper: Resizes image keeping aspect ratio, converts to RGB, saves as WebP.
+        Helper: Resizes image (downscale only), converts to RGB, saves as WebP.
         """
+        # Create a copy to prevent modifying the shared image object
         img_copy = img.copy()
         
+        # 1. Convert to RGB (Safety for PNG/RGBA)
         if img_copy.mode not in ("RGB", "RGBA"):
             img_copy = img_copy.convert("RGB")
 
-        # Smart Resize (LANCZOS is best quality for downscaling)
-        img_copy.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        # 2. OPTIMIZATION: Only resize if the image is actually larger than max_dim
+        # This saves CPU and prevents any accidental upscaling weirdness.
+        current_w, current_h = img_copy.size
         
-        width, height = img_copy.size
+        if current_w > max_dim or current_h > max_dim:
+            # 'thumbnail' creates a thumbnail version no larger than the given size.
+            # It maintains aspect ratio and DOES NOT upscale small images.
+            img_copy.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
         
+        # Get final dimensions (might be 1920, or might be 500 if original was small)
+        final_width, final_height = img_copy.size
+        
+        # 3. Save to buffer
         output = io.BytesIO()
         img_copy.save(
             output, 
@@ -105,4 +115,4 @@ class ImageProcessor(BaseProcessor):
         )
         output.seek(0)
         
-        return output, width, height
+        return output, final_width, final_height

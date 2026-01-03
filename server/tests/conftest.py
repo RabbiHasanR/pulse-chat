@@ -9,6 +9,13 @@ import pytest
 import asyncio
 import importlib
 from unittest.mock import Mock
+
+import io
+import boto3
+from PIL import Image
+from moto import mock_aws
+from chats.models import ChatMessage, MediaAsset
+
 from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
@@ -214,3 +221,64 @@ def helpers():
         "recv_until": recv_until,
         "recv_type": recv_type,
     }
+    
+    
+    
+
+# --- MEDIA & AWS FIXTURES ---
+
+@pytest.fixture
+def s3_client():
+    """
+    Starts Moto S3, creates the test bucket, and yields the client.
+    This runs for every test function so you get a clean bucket each time.
+    """
+    with mock_aws():
+        # 1. Setup Mock S3
+        s3 = boto3.client("s3", region_name="us-east-1")
+        
+        # 2. Create the bucket defined in your code (or default)
+        bucket_name = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "test-bucket")
+        s3.create_bucket(Bucket=bucket_name)
+        
+        yield s3
+
+@pytest.fixture
+def raw_image_file():
+    """
+    Creates a valid 2000x2000 Red JPEG image in memory.
+    Returns: io.BytesIO stream
+    """
+    file_stream = io.BytesIO()
+    # Create a simple red image
+    image = Image.new("RGB", (2000, 2000), color="red")
+    image.save(file_stream, format="JPEG")
+    file_stream.seek(0) # Reset pointer so it's ready to read
+    return file_stream
+
+@pytest.fixture
+def chat_message(db, user, another_user):
+    """Creates a pending text message between two users"""
+    return ChatMessage.objects.create(
+        sender_id=user.id,
+        receiver_id=another_user.id,
+        message_type="text",
+        message_text="Hello",
+        status="pending"
+    )
+
+@pytest.fixture
+def media_asset(db, chat_message):
+    """
+    Creates a MediaAsset linked to the chat_message.
+    Note: object_key points to a fake file.
+    """
+    return MediaAsset.objects.create(
+        message=chat_message,
+        kind="image",
+        bucket="test-bucket",
+        object_key="raw_uploads/test_image.jpg",
+        file_name="test_image.jpg",
+        file_size=1024,
+        processing_status="queued"
+    )
