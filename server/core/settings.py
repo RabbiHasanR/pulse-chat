@@ -232,3 +232,7 @@ EMAIL_HOST_USER = 'hasan.mahmudul.rb@gmail.com'
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
+
+
+# Silence drf-yasg deprecation warning
+SWAGGER_USE_COMPAT_RENDERERS = False
