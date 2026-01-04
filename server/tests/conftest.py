@@ -263,7 +263,7 @@ def chat_message(db, user, another_user):
         sender_id=user.id,
         receiver_id=another_user.id,
         message_type="text",
-        message_text="Hello",
+        content="Hello",
         status="pending"
     )
 

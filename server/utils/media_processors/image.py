@@ -27,6 +27,11 @@ class ImageProcessor(BaseProcessor):
             # Open image
             img = Image.open(raw_stream)
             
+            # FIX 1: Force Load Image Data immediately.
+            # This detaches the image from the 'raw_stream' file pointer.
+            # Solves "ValueError: I/O operation on closed file"
+            img.load()
+            
             # 1. Fix Orientation (Crucial for mobile photos)
             img = ImageOps.exif_transpose(img)
             
@@ -43,6 +48,12 @@ class ImageProcessor(BaseProcessor):
                 img, THUMB_DIMENSION
             )
 
+            # FIX 2: Calculate file size BEFORE upload.
+            # Uploading can sometimes close or consume the stream depending on the client.
+            optimized_stream.seek(0, 2)
+            new_size = optimized_stream.tell()
+            optimized_stream.seek(0) # Reset to start for upload
+
             # 5. Upload to S3
             main_key = self.upload_content(optimized_stream, MIME_TYPE, "optimized")
             thumb_key = self.upload_content(thumb_stream, MIME_TYPE, "thumb")
@@ -50,14 +61,9 @@ class ImageProcessor(BaseProcessor):
             # -----------------------------------------------------------
             # 6. DELETE RAW FILE (Cost Optimization)
             # -----------------------------------------------------------
-            # Use the helper from BaseProcessor
             if main_key and main_key != self.original_key:
                 self.delete_original()
             # -----------------------------------------------------------
-
-            # 7. Calculate file size of the new optimized image
-            optimized_stream.seek(0, 2)
-            new_size = optimized_stream.tell()
 
             # 8. Return Result
             return {
@@ -69,8 +75,6 @@ class ImageProcessor(BaseProcessor):
                 
                 "variants": {
                     "thumbnail": thumb_key,
-                    
-                    # Original file is deleted, but we keep metadata
                     "original_width": original_w,
                     "original_height": original_h
                 }

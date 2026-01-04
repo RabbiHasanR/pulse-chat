@@ -214,7 +214,9 @@ class MediaAsset(models.Model):
     
     @property
     def url(self):
-        if self.processing_status != "done":
+        # FIX: Remove the status check. 
+        # Always allow access to the current object_key (whether raw or optimized).
+        if not self.object_key:
             return None
         
         from utils.aws import s3, AWS_BUCKET
@@ -224,11 +226,11 @@ class MediaAsset(models.Model):
             ExpiresIn=3600
         )
         
-    
     @property
     def thumbnail_url(self):
-        from utils.aws import s3
+        from utils.aws import s3, AWS_BUCKET
     
+        # 1. Try to get the specific thumbnail variant
         thumb_key = self.variants.get("thumbnail")
 
         if thumb_key:
@@ -238,6 +240,8 @@ class MediaAsset(models.Model):
                 ExpiresIn=3600
             )
 
+        # 2. Fallback: If no thumb exists (e.g. processing pending/failed),
+        # return the main URL so the UI shows the full-size image.
         if self.kind == "image":
             return self.url
             

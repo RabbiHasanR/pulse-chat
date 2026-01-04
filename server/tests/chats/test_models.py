@@ -54,3 +54,6 @@ class TestMediaAssetUrls:
         assert "final_optimized.webp" in url
         # Ensure it's a signed URL (contains signature params)
         assert "Signature=" in url or "X-Amz-Signature=" in url
+        
+        
+        
