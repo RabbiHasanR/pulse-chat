@@ -26,7 +26,7 @@ schema_view = get_schema_view(
         title="Pulse Chat API",
         default_version="v1",
         description="API documentation for Pulse Chat",
-        contact=openapi.Contact(email="rabbi.hasan.dev@example.com"),
+        contact=openapi.Contact(email="rabbi.hasan.dev@gmail.com"),
         license=openapi.License(name="MIT License"),
     ),
     public=True,

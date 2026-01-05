@@ -1,10 +1,9 @@
 import math
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
 from django.db import transaction
 
+from utils.response import success_response, error_response
 from utils.aws import s3, AWS_BUCKET, new_object_key
 from .models import ChatMessage, MediaAsset
 from .serializers import (
@@ -22,7 +21,9 @@ class PrepareUpload(APIView):
 
     def post(self, request):
         ser = PrepareUploadIn(data=request.data)
-        ser.is_valid(raise_exception=True)
+        if not ser.is_valid():
+            return error_response(message="Invalid data", errors=ser.errors, status=400)
+        
         d = ser.validated_data
 
         # NEXT-BATCH (Client asks for more parts)
@@ -89,13 +90,17 @@ class PrepareUpload(APIView):
                 Params={"Bucket": AWS_BUCKET, "Key": object_key, "ContentType": d["content_type"]},
                 ExpiresIn=DEFAULT_EXPIRES_DIRECT,
             )
-            return Response({
-                "mode": "direct",
-                "object_key": object_key,
-                "put_url": put_url,
-                "expires_in": DEFAULT_EXPIRES_DIRECT,
-                "message_id": msg.id,
-            }, status=201)
+            
+            return success_response(
+                data={
+                    "mode": "direct",
+                    "object_key": object_key,
+                    "put_url": put_url,
+                    "expires_in": DEFAULT_EXPIRES_DIRECT,
+                    "message_id": msg.id,
+                }, 
+                status=201
+            )
 
         else:
             # Multipart Upload
@@ -122,20 +127,23 @@ class PrepareUpload(APIView):
                 )
                 items.append({"part_number": pn, "url": url})
 
-            return Response({
-                "mode": "multipart",
-                "object_key": object_key,
-                "upload_id": upload_id,
-                "part_size": cps,
-                "num_parts": cnp,
-                "batch": {
-                    "start_part": 1,
-                    "count": max_pn,
-                    "expires_in": DEFAULT_EXPIRES_PART,
-                    "items": items,
-                },
-                "message_id": msg.id,
-            }, status=201)
+            return success_response(
+                data={
+                    "mode": "multipart",
+                    "object_key": object_key,
+                    "upload_id": upload_id,
+                    "part_size": cps,
+                    "num_parts": cnp,
+                    "batch": {
+                        "start_part": 1,
+                        "count": max_pn,
+                        "expires_in": DEFAULT_EXPIRES_PART,
+                        "items": items,
+                    },
+                    "message_id": msg.id,
+                }, 
+                status=201
+            )
 
     def _sign_batch(self, d):
         """Helper for fetching more multipart URLs"""
@@ -149,17 +157,20 @@ class PrepareUpload(APIView):
                 ExpiresIn=DEFAULT_EXPIRES_PART,
             )
             items.append({"part_number": pn, "url": url})
-        return Response({
-            "mode": "multipart",
-            "object_key": d["object_key"],
-            "upload_id": d["upload_id"],
-            "batch": {
-                "start_part": start,
-                "count": count,
-                "expires_in": DEFAULT_EXPIRES_PART,
-                "items": items
+            
+        return success_response(
+            data={
+                "mode": "multipart",
+                "object_key": d["object_key"],
+                "upload_id": d["upload_id"],
+                "batch": {
+                    "start_part": start,
+                    "count": count,
+                    "expires_in": DEFAULT_EXPIRES_PART,
+                    "items": items
+                }
             }
-        })
+        )
 
 
 class CompleteUpload(APIView):
@@ -167,7 +178,9 @@ class CompleteUpload(APIView):
 
     def post(self, request):
         ser = CompleteUploadIn(data=request.data)
-        ser.is_valid(raise_exception=True)
+        if not ser.is_valid():
+            return error_response(message="Invalid data", errors=ser.errors, status=400)
+            
         d = ser.validated_data
 
         object_key = d["object_key"]
@@ -181,7 +194,7 @@ class CompleteUpload(APIView):
                 processing_status="queued"
             )
         except MediaAsset.DoesNotExist:
-            return Response({"error": "Asset not found or already processed"}, status=404)
+            return error_response(message="Asset not found or already processed", status=404)
 
         # 2. Complete multipart upload on S3 (if applicable)
         if parts:
@@ -193,10 +206,9 @@ class CompleteUpload(APIView):
                     MultipartUpload={"Parts": parts},
                 )
             except Exception as e:
-                return Response({"error": f"S3 Error: {str(e)}"}, status=400)
+                return error_response(message="S3 Upload Failed", errors=[str(e)], status=400)
 
         # 3. Mark asset as ready (remains 'queued' until worker picks it up)
-        # We update updated_at to track when upload finished
         asset.processing_status = "queued"
         asset.save(update_fields=["processing_status", "updated_at"])
 
@@ -227,7 +239,6 @@ class CompleteUpload(APIView):
         notify_message_event.delay(payload)
 
         # 5. TRIGGER THE WORKER
-        # This worker will eventually set status="sent" and stage="done"
         process_uploaded_asset.delay(asset.id)
 
-        return Response({"success": True, "message": "Upload completed, processing started."}, status=200)
+        return success_response(message="Upload completed, processing started.", status=200)
