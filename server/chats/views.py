@@ -41,8 +41,6 @@ class PrepareUpload(APIView):
                 sender=request.user,
                 receiver_id=d["receiver_id"],
                 message_type=d["message_type"],
-                file_name=file_name,
-                file_size=file_size,
                 status="pending",
             )
 

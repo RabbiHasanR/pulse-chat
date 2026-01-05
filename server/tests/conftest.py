@@ -8,7 +8,7 @@ import json
 import pytest
 import asyncio
 import importlib
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import io
 import boto3
@@ -282,3 +282,16 @@ def media_asset(db, chat_message):
         file_size=1024,
         processing_status="queued"
     )
+    
+
+@pytest.fixture(autouse=True)
+def patch_global_s3_client(s3_client):
+    """
+    Universal Patch: This ensures that ANY code in your project 
+    (Processors, Tasks, Views) that does:
+    'from utils.aws import s3'
+    ...will automatically use the fake Moto client.
+    """
+    # We patch the definition in utils.aws, which is the source of truth
+    with patch("utils.aws.s3", s3_client):
+        yield

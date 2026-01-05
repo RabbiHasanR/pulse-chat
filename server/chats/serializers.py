@@ -3,7 +3,7 @@ from rest_framework import serializers
 MIN_PART_SIZE = 5 * 1024 * 1024        # 5MB
 MAX_PART_SIZE = 512 * 1024 * 1024      # 512MB (policy cap)
 MAX_PARTS     = 10_000                 # S3 limit
-DIRECT_THRESHOLD = 10 * 1024 * 1024    # 10MB
+DIRECT_THRESHOLD = 5 * 1024 * 1024    # 5MB
 MAX_BATCH_COUNT  = 500
 
 DEFAULT_EXPIRES_DIRECT = 300  # 5 minutes (Enough for small files)

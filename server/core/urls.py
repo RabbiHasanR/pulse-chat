@@ -40,5 +40,5 @@ urlpatterns = [
     path("openapi.json", schema_view.without_ui(cache_timeout=0), name="schema-json"),
     
     path('api/auth/', include("users.urls")),
-    path("api/chats/", include("chats.urls")),
+    path("api/chat/", include("chats.urls")),
 ]
