@@ -201,7 +201,6 @@ class MediaAsset(models.Model):
 
     # Variants & URLs
     variants = models.JSONField(default=dict, blank=True)
-    test_field = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
