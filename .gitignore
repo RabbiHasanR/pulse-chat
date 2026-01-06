@@ -30,7 +30,7 @@ chat_json.txt
 
 
 # Ignore all migration folders
-server/**/migrations/
+# server/**/migrations/
 
 # Ignore compiled python files and pycache
 server/**/__pycache__/
