@@ -177,6 +177,9 @@ jobs:
       DATABASE_PORT: 5432
       REDIS_HOST: localhost
       REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CHANNEL_URL: redis://localhost:6379/1
+      CACHE_URL: redis://localhost:6379/2
       DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
       EMAIL_HOST_PASSWORD: ${{ secrets.EMAIL_HOST_PASSWORD }}
       DEBUG: "True"
