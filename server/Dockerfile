@@ -24,6 +24,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev curl netcat-openbsd \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /root/.local /root/.local
