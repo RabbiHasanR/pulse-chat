@@ -4,6 +4,7 @@ import logging
 import shutil
 import tempfile
 from utils.aws import s3, AWS_BUCKET
+from .ffmpeg_gress import FFmpegProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +12,6 @@ logger = logging.getLogger(__name__)
 SEGMENT_DURATION = 10 
 
 # Adaptive Bitrate Settings
-# 'w' and 'h' are targets. We use the smallest dimension to determine if we should generate it.
 RESOLUTIONS = [
     {"name": "1080p", "w": 1920, "h": 1080, "bitrate": "4500k", "maxrate": "4800k", "bufsize": "6000k"},
     {"name": "720p",  "w": 1280, "h": 720,  "bitrate": "2500k", "maxrate": "2800k", "bufsize": "3500k"},
@@ -36,9 +36,10 @@ class VideoProcessor:
             ExpiresIn=3600 # 1 hour validity
         )
 
-    def process(self):
+    def process(self, on_progress_callback=None):
         """
         Main execution pipeline.
+        :param on_progress_callback: function(percent, thumb_key=None)
         Returns: (master_playlist_key, thumbnail_key)
         """
         try:
@@ -47,12 +48,17 @@ class VideoProcessor:
 
             # 1. Probe Input (Over Network) to get resolution & duration
             metadata = self._get_metadata(input_url)
+            total_duration = metadata['duration']
             
-            # 2. Generate Thumbnail (At 1 second mark)
-            thumb_key = self._process_thumbnail(input_url, metadata['duration'])
+            # 2. Generate Thumbnail (At 1 second mark) - 0-5% Progress
+            thumb_key = self._process_thumbnail(input_url, total_duration)
+            
+            # NOTIFY: Thumbnail ready (Jump to 5%)
+            if on_progress_callback:
+                on_progress_callback(5.0, thumb_key=thumb_key)
 
-            # 3. Generate HLS Adaptive Stream
-            hls_master_key = self._process_hls(input_url, metadata)
+            # 3. Generate HLS Adaptive Stream - 5-100% Progress
+            hls_master_key = self._process_hls(input_url, metadata, on_progress_callback)
 
             # 4. Delete Original Raw File (Save S3 Storage)
             self._delete_original()
@@ -109,104 +115,106 @@ class VideoProcessor:
             return thumb_key
         except ffmpeg.Error as e:
             logger.error(f"Thumbnail generation failed: {e.stderr.decode('utf8')}")
-            # Non-critical: return None or raise depending on your policy. We raise to be safe.
+            # Non-critical: raise so we know, or handle gracefully
             raise
 
-    def _process_hls(self, input_url, metadata):
+    def _process_hls(self, input_url, metadata, callback):
         """
         Generates HLS Master Playlist and Variant streams.
         Skip upscaling based on input dimensions.
+        Includes Real-Time Progress Tracking.
         """
-        # Determine the smallest dimension (Orientation Agnostic)
-        # e.g., 1920x1080 (Landscape) -> min is 1080
-        # e.g., 1080x1920 (Portrait)  -> min is 1080
         input_min_dim = min(metadata['width'], metadata['height'])
-
         base_s3_prefix = f"processed/{self.asset.id}/hls"
         master_playlist_content = "#EXTM3U\n"
-        variants_generated = False
+        
+        # Filter valid resolutions (Skip upscaling)
+        valid_resolutions = [
+            r for r in RESOLUTIONS 
+            if input_min_dim >= (min(r["w"], r["h"]) * 0.9)
+        ]
+        
+        # Fallback: If video is tiny (e.g. 100px), at least process the lowest tier
+        if not valid_resolutions:
+            valid_resolutions = [RESOLUTIONS[-1]]
 
-        for res in RESOLUTIONS:
-            target_min_dim = min(res["w"], res["h"])
+        total_variants = len(valid_resolutions)
+        base_progress = 5.0 # We start at 5% (after thumbnail)
+        progress_per_variant = 95.0 / total_variants
 
-            # LOGIC: If input resolution < 90% of target, SKIP IT.
-            # (e.g. Input 480p vs Target 720p -> Skip)
-            if input_min_dim < (target_min_dim * 0.9):
-                continue
-
-            variants_generated = True
+        for i, res in enumerate(valid_resolutions):
             variant_name = res['name']
             logger.info(f"Transcoding variant: {variant_name}")
 
-            # Create subfolder: /tmp/.../720p/
+            # Subfolder setup
             variant_dir = os.path.join(self.temp_dir, variant_name)
             os.makedirs(variant_dir, exist_ok=True)
-
             playlist_file = os.path.join(variant_dir, "index.m3u8")
             segment_pattern = os.path.join(variant_dir, "seg_%03d.ts")
 
+            # --- PROGRESS TRACKING ---
+            current_variant_start_pct = base_progress + (i * progress_per_variant)
+            
+            def handle_ffmpeg_update(ffmpeg_pct):
+                # Map 0-100% of this variant to its slice of the total
+                global_pct = current_variant_start_pct + ((ffmpeg_pct / 100) * progress_per_variant)
+                if callback:
+                    callback(global_pct)
+
+            tracker = FFmpegProgressTracker(metadata['duration'], handle_ffmpeg_update)
+            tracker.start()
+            progress_url = tracker.get_ffmpeg_arg()
+            # -------------------------
+
             try:
-                # Transcode logic
                 (
                     ffmpeg
                     .input(input_url)
                     .output(
                         playlist_file,
-                        # Scale filter:
-                        # -2 ensures the calculated dimension is divisible by 2 (required by H.264)
-                        # We force the 'height' to the target, and let width scale automatically
                         vf=f"scale=-2:{res['h']}", 
                         c="libx264",
                         b=res['bitrate'],
                         maxrate=res['maxrate'],
                         bufsize=res['bufsize'],
-                        # HLS Flags
                         format="hls",
                         hls_time=SEGMENT_DURATION,
-                        hls_list_size=0, # Include all segments
+                        hls_list_size=0,
                         hls_segment_filename=segment_pattern,
-                        hls_flags="delete_segments", # Don't delete local, we need to upload them first
-                        g=SEGMENT_DURATION * 30, # Keyframe interval (~30fps)
-                        preset="veryfast" # Speed vs Compression balance
+                        hls_flags="delete_segments",
+                        g=SEGMENT_DURATION * 30,
+                        preset="veryfast",
+                        progress=progress_url  # Bind progress socket
                     )
+                    .global_args('-nostats') 
                     .run(quiet=True, overwrite_output=True)
                 )
-
-                # Upload all .ts and .m3u8 files for this variant
-                self._upload_directory(variant_dir, f"{base_s3_prefix}/{variant_name}")
-
-                # Append to Master Playlist
-                # Convert bitrate string "1500k" -> integer 1500000
-                bandwidth = int(res['bitrate'].replace('k', '000'))
-                
-                # Note: We hardcode 16:9 res in playlist info, but the actual video preserves aspect ratio.
-                # This is standard practice for HLS manifests.
-                master_playlist_content += (
-                    f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
-                    f"{variant_name}/index.m3u8\n"
-                )
-
             except ffmpeg.Error as e:
-                logger.error(f"Failed to process variant {variant_name}: {e.stderr.decode('utf8')}")
+                logger.error(f"Failed variant {variant_name}: {e.stderr.decode('utf8')}")
                 raise
+            finally:
+                tracker.stop()
 
-        if not variants_generated:
-            # Fallback: If video is smaller than our lowest setting (unlikely with 240p),
-            # force process the lowest resolution (240p) just so we have something.
-            # (Logic omitted for brevity, but you can duplicate the loop for the last item in RESOLUTIONS)
-            raise ValueError("Input video resolution is too low to process")
+            # Upload files
+            self._upload_directory(variant_dir, f"{base_s3_prefix}/{variant_name}")
 
-        # Write Master Playlist to disk
+            # Update Master Playlist info
+            bandwidth = int(res['bitrate'].replace('k', '000'))
+            master_playlist_content += (
+                f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
+                f"{variant_name}/index.m3u8\n"
+            )
+
+        # Write & Upload Master Playlist
         master_path = os.path.join(self.temp_dir, "master.m3u8")
         with open(master_path, "w") as f:
             f.write(master_playlist_content)
         
-        # Upload Master Playlist
         master_key = f"{base_s3_prefix}/master.m3u8"
         with open(master_path, "rb") as f:
             s3.upload_fileobj(f, self.bucket, master_key, ExtraArgs={
                 "ContentType": "application/x-mpegURL",
-                "CacheControl": "no-cache" # Master playlist should not be cached tightly
+                "CacheControl": "no-cache"
             })
 
         return master_key
@@ -218,13 +226,12 @@ class VideoProcessor:
                 local_path = os.path.join(root, file)
                 s3_key = f"{s3_prefix}/{file}"
                 
-                # MIME Types
                 if file.endswith(".ts"):
                     ctype = "video/MP2T"
-                    cache = "max-age=31536000" # Segments never change, cache forever
+                    cache = "max-age=31536000"
                 else:
                     ctype = "application/x-mpegURL"
-                    cache = "no-cache" # Playlists might update (live), or mostly static (VOD)
+                    cache = "no-cache"
                 
                 with open(local_path, "rb") as f:
                     s3.upload_fileobj(f, self.bucket, s3_key, ExtraArgs={
@@ -237,4 +244,4 @@ class VideoProcessor:
             logger.info(f"Deleting raw file: {self.original_key}")
             s3.delete_object(Bucket=self.bucket, Key=self.original_key)
         except Exception as e:
-            logger.warning(f"Failed to delete raw file (non-critical): {e}")
+            logger.warning(f"Failed to delete raw file: {e}")
