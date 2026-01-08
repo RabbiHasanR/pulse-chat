@@ -16,9 +16,6 @@ from utils.media_processors.video import VideoProcessor
 
 @shared_task
 def notify_message_event(payload: dict):
-    """
-    Standard notification task for WebSockets (unchanged from your code)
-    """
     data = payload.get("data", {})
     message_id = data.get("message_id")
     sender_id = data.get("sender_id")
@@ -32,7 +29,6 @@ def notify_message_event(payload: dict):
 
     channel_layer = get_channel_layer()
 
-    # 1. Notify Sender & Receiver
     async_to_sync(channel_layer.group_send)(room(sender_id), {
         "type": "forward_event",
         "payload": payload,
@@ -42,10 +38,8 @@ def notify_message_event(payload: dict):
         "payload": payload,
     })
 
-    # 2. Presence / Seen Logic
     is_media_ready = (status != "pending") and (processing_status == "done")
     is_text_message = (data.get("message_type") == "text")
-    
     should_check_seen = is_media_ready or is_text_message
 
     if should_check_seen:
@@ -69,30 +63,29 @@ def notify_message_event(payload: dict):
                 from_user_id=sender_id,
             )
 
-
-@shared_task(bind=True)
+# ----------------------------------------------------------------------------
+# 2. PROCESSING TASK
+# ----------------------------------------------------------------------------
+@shared_task(
+    bind=True, 
+    acks_late=True,             # Retry if worker crashes mid-task
+    reject_on_worker_lost=True, # Re-queue immediately on power loss
+    max_retries=3
+)
 def process_uploaded_asset(self, asset_id):
-    """
-    Heavy background worker.
-    Handles Images (WebP) and Videos (HLS Streaming) with progress tracking.
-    """
     try:
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
-
-        # State Variables for Throttling
         last_ws_progress = 0
         last_db_progress = 0
 
-        # --- PROGRESS HANDLER FUNCTION ---
+        # --- PROGRESS HANDLER ---
         def on_progress(percent, thumb_key=None):
             nonlocal last_ws_progress, last_db_progress
             
-            # If a thumbnail was just generated (video only)
             if thumb_key:
                 asset.variants['thumbnail'] = thumb_key
                 asset.save(update_fields=['variants'])
-                # Force update UI now
                 notify_message_event.delay({
                     "type": "chat_message_update", 
                     "data": {
@@ -104,8 +97,7 @@ def process_uploaded_asset(self, asset_id):
                     }
                 })
 
-            # 1. WebSocket Throttle (Update every 2%)
-            # Sends "12%", "14%"... so UI circle is smooth
+            # WebSocket Throttle (2%)
             if abs(percent - last_ws_progress) >= 2:
                 last_ws_progress = percent
                 notify_message_event.delay({
@@ -117,22 +109,36 @@ def process_uploaded_asset(self, asset_id):
                     }
                 })
 
-            # 2. Database Throttle (Update every 10%)
-            # Prevents spamming SQL updates
+            # DB Throttle (10%)
             if abs(percent - last_db_progress) >= 10:
                 last_db_progress = percent
                 MediaAsset.objects.filter(id=asset.id).update(
                     processing_progress=percent,
                     processing_status="running"
                 )
-        # ---------------------------------
 
-        # Initial Status Update
+        # --- CHECKPOINT HANDLER (New) ---
+        def on_checkpoint(variant_name):
+            # Refresh to get latest state in case of concurrent writes
+            asset.refresh_from_db()
+            current_vars = asset.variants or {}
+            
+            # Init nested dict if missing
+            if 'hls_parts' not in current_vars:
+                current_vars['hls_parts'] = {}
+            
+            # Mark this resolution as done
+            current_vars['hls_parts'][variant_name] = True
+            
+            asset.variants = current_vars
+            asset.save(update_fields=['variants'])
+            print(f"Checkpoint saved: {variant_name}")
+        # --------------------------------
+
+        # Init Status
         asset.processing_status = "running"
-        asset.processing_progress = 0.0
-        asset.save(update_fields=["processing_status", "processing_progress"])
+        asset.save(update_fields=["processing_status"])
 
-        # EXECUTE PROCESSING
         result_data = {}
         
         if asset.kind == MediaAsset.Kind.IMAGE:
@@ -141,42 +147,42 @@ def process_uploaded_asset(self, asset_id):
             
         elif asset.kind == MediaAsset.Kind.VIDEO:
             processor = VideoProcessor(asset)
-            # Pass our smart callback to the processor
-            master_key, thumb_key = processor.process(on_progress_callback=on_progress)
+            master_key, thumb_key = processor.process(
+                on_progress_callback=on_progress,
+                on_checkpoint_save=on_checkpoint
+            )
             
             result_data = {
-                "object_key": master_key, # The .m3u8 playlist
+                "object_key": master_key, 
                 "variants": {
                     "type": "hls", 
                     "master": master_key, 
-                    "thumbnail": thumb_key
+                    "thumbnail": thumb_key,
+                    "hls_parts": asset.variants.get('hls_parts', {}) # Keep checkpoint data
                 }
             }
 
-        # APPLY RESULTS
+        # Apply Results
         if result_data:
             asset.object_key = result_data.get("object_key", asset.object_key)
-            # Only update dimensions/size if returned (ImageProcessor returns them, Video might calculate later)
             if "width" in result_data: asset.width = result_data["width"]
             if "height" in result_data: asset.height = result_data["height"]
             if "file_size" in result_data: asset.file_size = result_data["file_size"]
             
-            # Merge variants (don't overwrite if existing keys present)
             existing_vars = asset.variants or {}
             existing_vars.update(result_data.get("variants", {}))
             asset.variants = existing_vars
 
-        # FINAL SUCCESS STATE
+        # Done
         asset.processing_status = "done"
         asset.processing_progress = 100.0
         asset.save()
 
-        # Update Message Status -> SENT
         if msg.status == 'pending':
             msg.status = 'sent'
             msg.save(update_fields=["status", "updated_at"])
 
-        # SEND FINAL NOTIFICATION (100% Done)
+        # Final Notify
         payload = {
             "type": "chat_message",
             "success": True,
@@ -187,19 +193,14 @@ def process_uploaded_asset(self, asset_id):
                 "processing_status": "done",
                 "stage": "done",
                 "progress": 100.0,
-                
-                # URLs
                 "media_url": asset.url,
                 "thumbnail_url": asset.thumbnail_url,
-                
-                # Metadata
                 "width": asset.width,
                 "height": asset.height,
                 "file_name": asset.file_name,
                 "file_size": asset.file_size,
                 "content_type": asset.content_type,
                 "variants": asset.variants,
-                
                 "sender_id": msg.sender_id,
                 "receiver_id": msg.receiver_id,
                 "created_at": str(msg.created_at),
@@ -209,14 +210,11 @@ def process_uploaded_asset(self, asset_id):
 
     except Exception as e:
         print(f"Processing Failed for Asset {asset_id}: {e}")
-        
-        # Mark Failed
         try:
             asset = MediaAsset.objects.get(id=asset_id)
             asset.processing_status = "failed"
             asset.save(update_fields=["processing_status"])
             
-            # Notify Failure
             msg = asset.message
             payload = {
                 "type": "chat_message",

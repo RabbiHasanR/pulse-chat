@@ -93,3 +93,72 @@ def on_progress(percent, thumb_key=None):
     if percent - last_db_update >= 10:
         update_db(progress=percent)
         last_db_update = percent
+
+```
+
+
+
+
+
+
+
+
+# Video Processing & HLS Workflow
+
+## Overview
+This document outlines the architecture for processing video uploads in Pulse Chat. The system transforms raw, large video files into optimized **HLS (HTTP Live Streaming)** playlists with adaptive bitrates. It features **Real-Time Progress Tracking** for UI feedback and **Fault Tolerance** to resume processing after server crashes.
+
+## 1. The Video Processor (`video_processor.py`)
+
+### Strategy: Zero-Download Streaming
+Instead of downloading a 1GB file to the worker's disk (which is slow and uses high RAM/Disk), we use **Presigned S3 URLs**. FFmpeg streams the video directly from S3 over the network (`https://...`), keeping disk usage minimal.
+
+### Workflow Steps
+
+1.  **Probing:**
+    The processor inspects video metadata (resolution, duration) without downloading the file.
+
+2.  **Thumbnail Generation (0-5%):**
+    * Extracts a frame at `t=1s`.
+    * **Callback:** Immediately notifies the Task "Thumbnail is ready!" so the UI can show a preview image.
+
+3.  **Smart Resolution Logic:**
+    Calculates HLS variants based on input size (Never upscales).
+    * Input 1080p → Generates 1080p, 720p, 480p, 360p, 240p.
+    * Input 480p → Generates 480p, 360p, 240p.
+
+4.  **HLS Transcoding (5-100%):**
+    Loops through each target resolution:
+    * **Checkpoint Check:** Checks the database (`hls_parts`) to see if this resolution was already finished (in case of a previous crash). If yes, it skips transcoding.
+    * **Transcode:** Runs FFmpeg to slice the stream into `.ts` chunks.
+    * **Progress Tracking:** FFmpeg reports raw time data to a local TCP socket.
+    * **Save Checkpoint:** After uploading chunks, updates the DB to mark this resolution as "Done".
+
+5.  **Cleanup:**
+    * Deletes the original raw video from S3.
+    * Cleans up local temporary files.
+
+---
+
+## 2. Progress Tracking & Throttling
+
+### FFmpeg Progress Tracker
+A TCP socket listener (`ffmpeg_progress.py`) captures raw time data from FFmpeg (e.g., "00:00:15 processed") and converts it to a percentage (e.g., "25%").
+
+### Notification Throttling (Celery Task)
+To prevent crashing the frontend or database with too many updates:
+
+| Action | Frequency | Purpose |
+| :--- | :--- | :--- |
+| **WebSocket Update** | Every **2%** | Keeps the UI circle loader smooth. |
+| **Database Update** | Every **10%** | Persists state, reduces SQL write load. |
+| **Thumbnail Event** | **Immediate** | Sent the moment the JPG is ready. |
+
+---
+
+## 3. Fault Tolerance (Resume Capability)
+
+If the server crashes (e.g., OOM Kill, Power Outage) while processing `720p`:
+1.  **Celery Retry:** The task is re-queued automatically (`acks_late=True`).
+2.  **State Check:** The worker starts, loads the asset, and sees `variants['hls_parts'] = {'1080p': True}`.
+3.  **Resume:** It **skips** 1080p (saving ~5 mins) and starts immediately at 720p.
