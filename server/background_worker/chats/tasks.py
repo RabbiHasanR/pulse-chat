@@ -199,6 +199,26 @@ def process_video_task(self, asset_id):
             asset.save(update_fields=['variants'])
             print(f"Checkpoint saved: {variant_name}")
 
+        # --- PLAYABLE HANDLER (Progressive Playback) ---
+        def on_playable(master_key):
+            # 1. Update DB so the URL works immediately
+            asset.object_key = master_key
+            asset.save(update_fields=['object_key'])
+            
+            # 2. Notify Frontend: "Show Play Button!"
+            notify_message_event.delay({
+                "type": "chat_message_update", 
+                "data": {
+                    "message_id": msg.id,
+                    "video_url": asset.url, 
+                    "processing_status": "running", 
+                    "stage": "playable", # <--- UI triggers "Play" button here
+                    "progress": round(last_ws_progress, 1)
+                }
+            })
+            print(f"Video is playable: {master_key}")
+        # -----------------------------------------------
+
         # Init Status
         asset.processing_status = "running"
         asset.save(update_fields=["processing_status"])
@@ -207,7 +227,8 @@ def process_video_task(self, asset_id):
         processor = VideoProcessor(asset)
         master_key, thumb_key = processor.process(
             on_progress_callback=on_progress,
-            on_checkpoint_save=on_checkpoint
+            on_checkpoint_save=on_checkpoint,
+            on_playable_callback=on_playable # <--- Pass callback
         )
         
         result_data = {
