@@ -36,11 +36,12 @@ class VideoProcessor:
             ExpiresIn=3600 # 1 hour validity
         )
 
-    def process(self, on_progress_callback=None, on_checkpoint_save=None):
+    def process(self, on_progress_callback=None, on_checkpoint_save=None, on_playable_callback=None):
         """
         Main execution pipeline.
         :param on_progress_callback: function(percent, thumb_key=None)
         :param on_checkpoint_save: function(variant_name) - Saves state to DB
+        :param on_playable_callback: function(master_key) - Notifies when video is playable (even if low quality)
         """
         try:
             input_url = self.get_input_url()
@@ -51,7 +52,6 @@ class VideoProcessor:
             total_duration = metadata['duration']
             
             # 2. Generate Thumbnail (0-5% Progress)
-            # We check if thumbnail already exists (resume scenario)
             current_vars = self.asset.variants or {}
             thumb_key = current_vars.get('thumbnail')
             
@@ -63,7 +63,14 @@ class VideoProcessor:
                 logger.info("Thumbnail already exists, skipping generation.")
 
             # 3. Generate HLS Adaptive Stream (5-100% Progress)
-            hls_master_key = self._process_hls(input_url, metadata, on_progress_callback, on_checkpoint_save)
+            # Pass the new callback down to the HLS processor
+            hls_master_key = self._process_hls(
+                input_url, 
+                metadata, 
+                on_progress_callback, 
+                on_checkpoint_save, 
+                on_playable_callback
+            )
 
             # 4. Delete Original Raw File
             self._delete_original()
@@ -112,23 +119,32 @@ class VideoProcessor:
         
         return thumb_key
 
-    def _process_hls(self, input_url, metadata, callback, checkpoint_callback):
+    def _process_hls(self, input_url, metadata, callback, checkpoint_callback, playable_callback):
         input_min_dim = min(metadata['width'], metadata['height'])
         base_s3_prefix = f"processed/{self.asset.id}/hls"
-        master_playlist_content = "#EXTM3U\n"
+        master_key = f"{base_s3_prefix}/master.m3u8"
         
         # Load completed parts from DB (for Resume)
         completed_parts = self.asset.variants.get('hls_parts', {})
 
+        # Filter valid resolutions
         valid_resolutions = [
             r for r in RESOLUTIONS 
             if input_min_dim >= (min(r["w"], r["h"]) * 0.9)
         ]
         if not valid_resolutions: valid_resolutions = [RESOLUTIONS[-1]]
 
+        # --- OPTIMIZATION: SMALLEST FIRST ---
+        # Sort by height ascending (240p -> 360p -> ... -> 1080p)
+        valid_resolutions.sort(key=lambda x: x['h'])
+        # ------------------------------------
+
         total_variants = len(valid_resolutions)
         base_progress = 5.0
         progress_per_variant = 95.0 / total_variants
+        
+        # We store the lines of the master playlist as we build it
+        master_playlist_lines = ["#EXTM3U"]
 
         for i, res in enumerate(valid_resolutions):
             variant_name = res['name']
@@ -138,15 +154,22 @@ class VideoProcessor:
             if completed_parts.get(variant_name):
                 logger.info(f"Skipping {variant_name} (Found in checkpoint)")
                 
-                # Add to master playlist string even if skipped
-                master_playlist_content += (
+                # Add to master playlist logic
+                master_playlist_lines.append(
                     f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
-                    f"{variant_name}/index.m3u8\n"
+                    f"{variant_name}/index.m3u8"
                 )
+                
                 # Fake update UI
                 if callback:
                     fake_pct = base_progress + ((i + 1) * progress_per_variant)
                     callback(fake_pct)
+                    
+                # If this was the first one (even if skipped/resumed), ensure master exists
+                if i == 0:
+                    self._update_master_playlist(master_playlist_lines, master_key)
+                    if playable_callback: playable_callback(master_key)
+                
                 continue
             # --------------------------------
 
@@ -193,30 +216,44 @@ class VideoProcessor:
             finally:
                 tracker.stop()
 
-            # Upload & Save Checkpoint
+            # Upload files
             self._upload_directory(variant_dir, f"{base_s3_prefix}/{variant_name}")
             
+            # Save checkpoint
             if checkpoint_callback:
                 checkpoint_callback(variant_name)
 
-            master_playlist_content += (
+            # --- INCREMENTAL MASTER PLAYLIST UPDATE ---
+            # 1. Add this new variant to our list
+            master_playlist_lines.append(
                 f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
-                f"{variant_name}/index.m3u8\n"
+                f"{variant_name}/index.m3u8"
             )
-
-        # Write & Upload Master Playlist
-        master_path = os.path.join(self.temp_dir, "master.m3u8")
-        with open(master_path, "w") as f:
-            f.write(master_playlist_content)
-        
-        master_key = f"{base_s3_prefix}/master.m3u8"
-        with open(master_path, "rb") as f:
-            s3.upload_fileobj(f, self.bucket, master_key, ExtraArgs={
-                "ContentType": "application/x-mpegURL",
-                "CacheControl": "no-cache"
-            })
+            
+            # 2. Upload the new Master Playlist immediately
+            # This makes the video playable with the resolutions processed SO FAR
+            self._update_master_playlist(master_playlist_lines, master_key)
+            
+            # 3. Notify "Playable" (Only on the first successful variant)
+            if i == 0 and playable_callback:
+                playable_callback(master_key)
+            # ------------------------------------------
 
         return master_key
+
+    def _update_master_playlist(self, lines, s3_key):
+        """Helper to write and upload the master playlist"""
+        content = "\n".join(lines)
+        master_path = os.path.join(self.temp_dir, "master.m3u8")
+        
+        with open(master_path, "w") as f:
+            f.write(content)
+            
+        with open(master_path, "rb") as f:
+            s3.upload_fileobj(f, self.bucket, s3_key, ExtraArgs={
+                "ContentType": "application/x-mpegURL",
+                "CacheControl": "no-cache" # Important! Tells player to re-check for new qualities
+            })
 
     def _upload_directory(self, local_dir, s3_prefix):
         for root, dirs, files in os.walk(local_dir):
