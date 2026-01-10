@@ -18,7 +18,15 @@ from utils.media_processors.video import VideoProcessor
 # ----------------------------------------------------------------------------
 # 1. NOTIFICATION TASK (Lightweight - Default Queue)
 # ----------------------------------------------------------------------------
-@shared_task(queue='default')
+@shared_task(
+    queue='default',
+    acks_late=True,             
+    reject_on_worker_lost=True, 
+    retry_backoff=True,         
+    max_retries=3,              
+    time_limit=10,              
+    expires=60,                
+)
 def notify_message_event(payload: dict):
     """
     Handles real-time WebSocket events and 'Seen' status logic.
