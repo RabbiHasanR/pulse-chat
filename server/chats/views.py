@@ -14,7 +14,13 @@ from .serializers import (
     DEFAULT_EXPIRES_DIRECT,
     DEFAULT_EXPIRES_PART
 )
-from background_worker.chats.tasks import notify_message_event, process_uploaded_asset
+from background_worker.chats.tasks import (
+    notify_message_event,
+    process_video_task,
+    process_image_task,
+    process_audio_task,
+    process_file_task
+)
 
 class PrepareUpload(APIView):
     permission_classes = [IsAuthenticated]
@@ -236,7 +242,17 @@ class CompleteUpload(APIView):
         }
         notify_message_event.delay(payload)
 
-        # 5. TRIGGER THE WORKER
-        process_uploaded_asset.delay(asset.id)
+        # 5. TRIGGER THE CORRECT WORKER (Task Routing)
+        if asset.kind == MediaAsset.Kind.VIDEO:
+            process_video_task.delay(asset.id)
+            
+        elif asset.kind == MediaAsset.Kind.IMAGE:
+            process_image_task.delay(asset.id)
+            
+        elif asset.kind == MediaAsset.Kind.AUDIO:
+            process_audio_task.delay(asset.id)
+            
+        else:
+            process_file_task.delay(asset.id)
 
         return success_response(message="Upload completed, processing started.", status=200)

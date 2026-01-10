@@ -13,7 +13,7 @@ from chats.models import ChatMessage, MediaAsset
 
 # Processors
 from utils.media_processors.image import ImageProcessor
-from utils.media_processors.video_processor import VideoProcessor
+from utils.media_processors.video import VideoProcessor
 
 # ----------------------------------------------------------------------------
 # 1. NOTIFICATION TASK (Lightweight - Default Queue)
