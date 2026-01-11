@@ -86,55 +86,52 @@ def notify_message_event(payload: dict):
 def _finalize_asset(asset_id, result_data):
     """
     Common logic to mark asset as DONE, update DB, and notify Frontend.
+    Optimized payload but includes essential routing IDs.
     """
     try:
+        # 1. Database Updates
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
 
-        # 1. Apply Processor Results
         if result_data:
             asset.object_key = result_data.get("object_key", asset.object_key)
             if "width" in result_data: asset.width = result_data["width"]
             if "height" in result_data: asset.height = result_data["height"]
             if "file_size" in result_data: asset.file_size = result_data["file_size"]
             
-            # Merge variants
             existing_vars = asset.variants or {}
             existing_vars.update(result_data.get("variants", {}))
             asset.variants = existing_vars
 
-        # 2. Mark Done
         asset.processing_status = "done"
         asset.processing_progress = 100.0
         asset.save()
 
-        # 3. Update Message Status
         if msg.status == 'pending':
             msg.status = 'sent'
             msg.save(update_fields=["status", "updated_at"])
 
-        # 4. Final Notification
+        # 2. Optimized Notification Payload
         payload = {
-            "type": "chat_message",
+            "type": "chat_message_update",
             "success": True,
             "data": {
+                # ROUTING & IDENTITY
                 "message_id": msg.id,
-                "message_type": msg.message_type,
+                "sender_id": msg.sender_id,     # <--- Added back
+                "receiver_id": msg.receiver_id, # <--- Added back
+                
+                # STATUS CHANGE
                 "status": "sent",
                 "processing_status": "done",
                 "stage": "done",
                 "progress": 100.0,
+                
+                # NEW VISUAL DATA
                 "media_url": asset.url,
                 "thumbnail_url": asset.thumbnail_url,
                 "width": asset.width,
                 "height": asset.height,
-                "file_name": asset.file_name,
-                "file_size": asset.file_size,
-                "content_type": asset.content_type,
-                "variants": asset.variants,
-                "sender_id": msg.sender_id,
-                "receiver_id": msg.receiver_id,
-                "created_at": str(msg.created_at),
             }
         }
         notify_message_event.delay(payload)
