@@ -2,6 +2,11 @@ from celery import shared_task
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.cache import cache
+
+from botocore.exceptions import BotoCoreError, ClientError
+from socket import timeout as SocketTimeout
+from celery.exceptions import SoftTimeLimitExceeded, MaxRetriesExceededError
+
 from utils.redis_client import redis_client
 from utils.realtime import (
     room,
@@ -145,30 +150,35 @@ def _finalize_asset(asset_id, result_data):
 @shared_task(
     bind=True, 
     queue='video_queue',
-    acks_late=True, 
-    reject_on_worker_lost=True, 
-    max_retries=3
+    acks_late=True,              # Retry if worker crashes/loses power (Persistence)
+    reject_on_worker_lost=False, # SAFETY: Do NOT retry if FFmpeg crashes the process (prevents Poison Pill loop)
+    soft_time_limit=3600,        # Raise exception after 1 hour (allows cleanup)
+    time_limit=3660,             # Hard kill after 1h 1m
+    max_retries=3                # Allow 3 retries, but ONLY for network/infrastructure errors
 )
 def process_video_task(self, asset_id):
     try:
+        # Optimization: Fetch message details in single query
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
         
-        # Redis Key for ephemeral progress (Optimization)
+        # Redis Key for ephemeral progress
         progress_key = f"asset_progress:{asset_id}"
         last_ws_progress = 0
 
-        # --- PROGRESS HANDLER ---
+        # --- HANDLER 1: PROGRESS (Optimized Throttling) ---
         def on_progress(percent, thumb_key=None):
             nonlocal last_ws_progress
             
-            # 1. Update Redis (Fast)
+            # A. Update Redis (Lightweight & Fast)
             cache.set(progress_key, percent, timeout=3600)
 
-            # 2. Immediate Thumbnail Update
+            # B. Thumbnail Ready (Happens once)
             if thumb_key:
+                # Direct DB update (faster than .save())
                 asset.variants['thumbnail'] = thumb_key
-                asset.save(update_fields=['variants'])
+                MediaAsset.objects.filter(id=asset.id).update(variants=asset.variants)
+                
                 notify_message_event.delay({
                     "type": "chat_message_update", 
                     "data": {
@@ -180,7 +190,7 @@ def process_video_task(self, asset_id):
                     }
                 })
 
-            # 3. WebSocket Throttle (Every 2%)
+            # C. WebSocket Throttle (Only send if changed > 2%)
             if abs(percent - last_ws_progress) >= 2:
                 last_ws_progress = percent
                 notify_message_event.delay({
@@ -192,50 +202,54 @@ def process_video_task(self, asset_id):
                     }
                 })
 
-        # --- CHECKPOINT HANDLER ---
+        # --- HANDLER 2: CHECKPOINT (Resume Logic) ---
         def on_checkpoint(variant_name):
-            asset.refresh_from_db()
-            current_vars = asset.variants or {}
+            # Fetch only the 'variants' field to save bandwidth
+            current_asset = MediaAsset.objects.only('variants').get(id=asset_id)
+            current_vars = current_asset.variants or {}
+            
             if 'hls_parts' not in current_vars:
                 current_vars['hls_parts'] = {}
             
             current_vars['hls_parts'][variant_name] = True
-            asset.variants = current_vars
-            asset.save(update_fields=['variants'])
+            
+            # Atomic-style update
+            MediaAsset.objects.filter(id=asset_id).update(variants=current_vars)
+            
+            # Update local reference for subsequent logic
+            asset.variants = current_vars 
             print(f"Checkpoint saved: {variant_name}")
 
-        # --- PLAYABLE HANDLER (Progressive Playback) ---
+        # --- HANDLER 3: PLAYABLE (Progressive Availability) ---
         def on_playable(master_key):
-            # 1. Update DB so the URL works immediately
+            # 1. Update DB immediately so the URL is valid
+            MediaAsset.objects.filter(id=asset_id).update(object_key=master_key)
             asset.object_key = master_key
-            asset.save(update_fields=['object_key'])
             
-            # 2. Notify Frontend: "Show Play Button!"
+            # 2. Notify Frontend to show "Play" button
             notify_message_event.delay({
                 "type": "chat_message_update", 
                 "data": {
                     "message_id": msg.id,
                     "video_url": asset.url, 
                     "processing_status": "running", 
-                    "stage": "playable", # <--- UI triggers "Play" button here
+                    "stage": "playable", # <--- Triggers Play Button in UI
                     "progress": round(last_ws_progress, 1)
                 }
             })
             print(f"Video is playable: {master_key}")
-        # -----------------------------------------------
 
-        # Init Status
-        asset.processing_status = "running"
-        asset.save(update_fields=["processing_status"])
-
-        # Execute Processor
+        # --- START EXECUTION ---
+        MediaAsset.objects.filter(id=asset_id).update(processing_status="running")
+        
         processor = VideoProcessor(asset)
         master_key, thumb_key = processor.process(
             on_progress_callback=on_progress,
             on_checkpoint_save=on_checkpoint,
-            on_playable_callback=on_playable # <--- Pass callback
+            on_playable_callback=on_playable
         )
         
+        # Prepare final result
         result_data = {
             "object_key": master_key, 
             "variants": {
@@ -246,13 +260,27 @@ def process_video_task(self, asset_id):
             }
         }
         
-        # Finalize
         _finalize_asset(asset_id, result_data)
-        
-        # Cleanup Redis
         cache.delete(progress_key)
 
+    # --- EXCEPTION HANDLING: SMART RETRIES ---
+
+    # 1. Infrastructure Errors -> RETRY
+    except (BotoCoreError, ClientError, SocketTimeout, ConnectionError) as e:
+        print(f"Infrastructure Error for {asset_id}: {e}. Retrying...")
+        try:
+            # Exponential Backoff: Wait 10s, 20s, 40s...
+            raise self.retry(exc=e, countdown=10 * (2 ** self.request.retries))
+        except MaxRetriesExceededError:
+            _handle_failure(asset_id, f"Max retries exceeded for infra error: {e}")
+
+    # 2. Timeout -> FAIL GRACEFULLY
+    except SoftTimeLimitExceeded:
+        _handle_failure(asset_id, "Processing timed out (Soft limit exceeded)")
+    
+    # 3. Logic/FFmpeg Errors -> FAIL IMMEDIATELY (Do not retry bad files)
     except Exception as e:
+        print(f"Logic/FFmpeg Error for {asset_id}: {e}. Failing immediately.")
         _handle_failure(asset_id, e)
 
 # ----------------------------------------------------------------------------
