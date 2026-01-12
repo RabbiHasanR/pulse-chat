@@ -286,19 +286,49 @@ def process_video_task(self, asset_id):
 # ----------------------------------------------------------------------------
 # 3. IMAGE PROCESSING TASK (Medium - Image Queue)
 # ----------------------------------------------------------------------------
-@shared_task(bind=True, queue='image_queue', acks_late=True)
+@shared_task(
+    bind=True, 
+    queue='image_queue', 
+    acks_late=True,              # Retry if worker loses power
+    reject_on_worker_lost=False, # SAFETY: Prevent crash loops on "Image Bomb" files
+    soft_time_limit=60,          # Images must finish in 1 minute
+    time_limit=70,               # Hard kill after 70s
+    max_retries=3                # Retry network errors
+)
 def process_image_task(self, asset_id):
     try:
-        asset = MediaAsset.objects.get(id=asset_id)
-        asset.processing_status = "running"
-        asset.save(update_fields=["processing_status"])
+        # 1. Optimistic Update (Fast)
+        # Update status immediately without fetching the full object first
+        rows = MediaAsset.objects.filter(id=asset_id).update(processing_status="running")
+        if rows == 0:
+            return # Asset was deleted
 
+        # 2. Fetch Object
+        asset = MediaAsset.objects.get(id=asset_id)
+
+        # 3. Process
         processor = ImageProcessor(asset)
         result_data = processor.process()
         
+        # 4. Finalize
         _finalize_asset(asset_id, result_data)
 
+    # --- RETRY STRATEGY ---
+    except (BotoCoreError, ClientError, SocketTimeout, ConnectionError) as e:
+        # Network/S3 Glitch -> Retry
+        try:
+             # Wait 5s, 10s, 20s
+             raise self.retry(exc=e, countdown=5 * (2 ** self.request.retries))
+        except MaxRetriesExceededError:
+             _handle_failure(asset_id, f"Max retries exceeded: {e}")
+
+    # --- TIMEOUT HANDLING ---
+    except SoftTimeLimitExceeded:
+        _handle_failure(asset_id, "Image processing timed out (file too large or complex)")
+
+    # --- FAIL FAST ---
     except Exception as e:
+        # Corrupt file / Pillow error -> Fail immediately
         _handle_failure(asset_id, e)
 
 # ----------------------------------------------------------------------------
