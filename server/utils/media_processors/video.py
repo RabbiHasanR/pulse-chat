@@ -9,9 +9,11 @@ from .ffmpeg_progress import FFmpegProgressTracker
 logger = logging.getLogger(__name__)
 
 # HLS Segment Duration (Seconds)
+# 10s is the sweet spot for VOD (balances network requests vs seek speed)
 SEGMENT_DURATION = 10 
 
 # Adaptive Bitrate Settings
+# Ordered high-to-low, but we will sort them inside the function to be safe.
 RESOLUTIONS = [
     {"name": "1080p", "w": 1920, "h": 1080, "bitrate": "4500k", "maxrate": "4800k", "bufsize": "6000k"},
     {"name": "720p",  "w": 1280, "h": 720,  "bitrate": "2500k", "maxrate": "2800k", "bufsize": "3500k"},
@@ -26,6 +28,7 @@ class VideoProcessor:
         self.bucket = asset.bucket
         self.original_key = asset.object_key
         # Create a unique temp directory for this specific job
+        # We use mkdtemp to ensure thread safety and isolation
         self.temp_dir = tempfile.mkdtemp()
 
     def get_input_url(self):
@@ -39,9 +42,9 @@ class VideoProcessor:
     def process(self, on_progress_callback=None, on_checkpoint_save=None, on_playable_callback=None):
         """
         Main execution pipeline.
-        :param on_progress_callback: function(percent, thumb_key=None)
-        :param on_checkpoint_save: function(variant_name) - Saves state to DB
-        :param on_playable_callback: function(master_key) - Notifies when video is playable (even if low quality)
+        :param on_progress_callback: function(percent, thumb_key=None) - Updates Redis/UI
+        :param on_checkpoint_save: function(variant_name) - Saves state to Postgres
+        :param on_playable_callback: function(master_key) - Notifies UI to show "Play" button
         """
         try:
             input_url = self.get_input_url()
@@ -52,6 +55,7 @@ class VideoProcessor:
             total_duration = metadata['duration']
             
             # 2. Generate Thumbnail (0-5% Progress)
+            # Optimization: Check if thumbnail exists from a previous run
             current_vars = self.asset.variants or {}
             thumb_key = current_vars.get('thumbnail')
             
@@ -63,7 +67,6 @@ class VideoProcessor:
                 logger.info("Thumbnail already exists, skipping generation.")
 
             # 3. Generate HLS Adaptive Stream (5-100% Progress)
-            # Pass the new callback down to the HLS processor
             hls_master_key = self._process_hls(
                 input_url, 
                 metadata, 
@@ -73,6 +76,7 @@ class VideoProcessor:
             )
 
             # 4. Delete Original Raw File
+            # We don't need the massive MP4 anymore, saving S3 storage costs.
             self._delete_original()
 
             return hls_master_key, thumb_key
@@ -81,6 +85,8 @@ class VideoProcessor:
             logger.error(f"Video Processing Failed: {e}")
             raise e
         finally:
+            # OUTER CLEANUP:
+            # Ensure the entire temporary directory is deleted even if code crashes.
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
 
@@ -102,18 +108,23 @@ class VideoProcessor:
             raise
 
     def _process_thumbnail(self, input_url, duration):
+        """
+        Generates a highly optimized WebP thumbnail.
+        WebP is ~30% smaller than JPEG at the same quality.
+        """
         output_path = os.path.join(self.temp_dir, "thumbnail.webp")
+        # Take screenshot at 1s mark (avoids black frames at 0s), or 0s if video is tiny
         timestamp = 1 if duration > 1 else 0
         
         (
             ffmpeg
             .input(input_url, ss=timestamp)
-            .filter('scale', 320, -1)
+            .filter('scale', 320, -1) # 320px width for chat bubbles
             .output(
                 output_path, 
                 vframes=1, 
                 vcodec='libwebp',      
-                **{'qscale': 75} 
+                **{'qscale': 75}      # Quality 75 (Best balance)
             )
             .run(quiet=True, overwrite_output=True)
         )
@@ -123,7 +134,7 @@ class VideoProcessor:
         with open(output_path, "rb") as f:
             s3.upload_fileobj(f, self.bucket, thumb_key, ExtraArgs={
                 "ContentType": "image/webp", 
-                "CacheControl": "max-age=31536000"
+                "CacheControl": "max-age=31536000" # Cache for 1 Year (Immutable)
             })
         
         return thumb_key
@@ -136,15 +147,17 @@ class VideoProcessor:
         # Load completed parts from DB (for Resume)
         completed_parts = self.asset.variants.get('hls_parts', {})
 
-        # Filter valid resolutions
+        # Filter valid resolutions (don't upscale 480p video to 1080p)
         valid_resolutions = [
             r for r in RESOLUTIONS 
             if input_min_dim >= (min(r["w"], r["h"]) * 0.9)
         ]
+        # Fallback: If video is tiny (e.g. 100px), just use the smallest resolution (240p)
         if not valid_resolutions: valid_resolutions = [RESOLUTIONS[-1]]
 
         # --- OPTIMIZATION: SMALLEST FIRST ---
         # Sort by height ascending (240p -> 360p -> ... -> 1080p)
+        # This ensures the user gets a "Playable" video as fast as possible.
         valid_resolutions.sort(key=lambda x: x['h'])
         # ------------------------------------
 
@@ -163,18 +176,19 @@ class VideoProcessor:
             if completed_parts.get(variant_name):
                 logger.info(f"Skipping {variant_name} (Found in checkpoint)")
                 
-                # Add to master playlist logic
+                # Still need to add it to the master playlist lines!
                 master_playlist_lines.append(
                     f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
                     f"{variant_name}/index.m3u8"
                 )
                 
-                # Fake update UI
+                # Fake update UI so progress bar doesn't jump weirdly
                 if callback:
                     fake_pct = base_progress + ((i + 1) * progress_per_variant)
                     callback(fake_pct)
                     
-                # If this was the first one (even if skipped/resumed), ensure master exists
+                # If this was the first one (even if resumed), ensure master exists
+                # This handles the edge case where server crashed AFTER upload but BEFORE playable notification
                 if i == 0:
                     self._update_master_playlist(master_playlist_lines, master_key)
                     if playable_callback: playable_callback(master_key)
@@ -205,18 +219,18 @@ class VideoProcessor:
                     .input(input_url)
                     .output(
                         playlist_file,
-                        vf=f"scale=-2:{res['h']}", 
+                        vf=f"scale=-2:{res['h']}", # -2 ensures width is divisible by 2 (Required by H.264)
                         c="libx264",
                         b=res['bitrate'],
                         maxrate=res['maxrate'],
                         bufsize=res['bufsize'],
                         format="hls",
                         hls_time=SEGMENT_DURATION,
-                        hls_list_size=0,
+                        hls_list_size=0, # 0 means "Keep all segments" (VOD)
                         hls_segment_filename=segment_pattern,
                         hls_flags="delete_segments",
-                        g=SEGMENT_DURATION * 30,
-                        preset="veryfast",
+                        g=SEGMENT_DURATION * 30, # Force Keyframe every 10s for perfect cutting
+                        preset="veryfast",       # Best balance for user uploads
                         progress=progress_url
                     )
                     .global_args('-nostats') 
@@ -225,25 +239,33 @@ class VideoProcessor:
             finally:
                 tracker.stop()
 
-            # Upload files
+            # 1. Upload files
             self._upload_directory(variant_dir, f"{base_s3_prefix}/{variant_name}")
             
-            # Save checkpoint
+            # 2. IMMEDIATE CLEANUP (Optimization)
+            # Remove this specific quality folder from local disk immediately.
+            # This keeps disk usage low (max ~1GB) even for huge videos.
+            try:
+                shutil.rmtree(variant_dir)
+            except OSError as e:
+                logger.warning(f"Error cleaning up {variant_dir}: {e}")
+            
+            # 3. Save checkpoint to DB
             if checkpoint_callback:
                 checkpoint_callback(variant_name)
 
             # --- INCREMENTAL MASTER PLAYLIST UPDATE ---
-            # 1. Add this new variant to our list
+            # Add this new variant to our list
             master_playlist_lines.append(
                 f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
                 f"{variant_name}/index.m3u8"
             )
             
-            # 2. Upload the new Master Playlist immediately
-            # This makes the video playable with the resolutions processed SO FAR
+            # Upload the new Master Playlist immediately
+            # This enables "Progressive Playback" (Watch 240p while 1080p processes)
             self._update_master_playlist(master_playlist_lines, master_key)
             
-            # 3. Notify "Playable" (Only on the first successful variant)
+            # Notify "Playable" (Only on the first successful variant)
             if i == 0 and playable_callback:
                 playable_callback(master_key)
             # ------------------------------------------
@@ -261,19 +283,23 @@ class VideoProcessor:
         with open(master_path, "rb") as f:
             s3.upload_fileobj(f, self.bucket, s3_key, ExtraArgs={
                 "ContentType": "application/x-mpegURL",
-                "CacheControl": "no-cache" # Important! Tells player to re-check for new qualities
+                "CacheControl": "no-cache" # Important! Tells player to always check for new qualities
             })
 
     def _upload_directory(self, local_dir, s3_prefix):
+        """Recursively uploads a directory to S3 with optimized headers"""
         for root, dirs, files in os.walk(local_dir):
             for file in files:
                 local_path = os.path.join(root, file)
                 s3_key = f"{s3_prefix}/{file}"
                 
-                if file.endswith(".ts"):
-                    ctype = "video/MP2T"
+                # Smart Caching Strategy
+                if file.endswith(".ts") or file.endswith(".webp"):
+                    # Video chunks & images never change -> Cache for 1 Year
+                    ctype = "video/MP2T" if file.endswith(".ts") else "image/webp"
                     cache = "max-age=31536000"
                 else:
+                    # Playlists (.m3u8) might change -> Do not cache
                     ctype = "application/x-mpegURL"
                     cache = "no-cache"
                 
