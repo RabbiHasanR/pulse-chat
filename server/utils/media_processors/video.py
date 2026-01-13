@@ -102,20 +102,29 @@ class VideoProcessor:
             raise
 
     def _process_thumbnail(self, input_url, duration):
-        output_path = os.path.join(self.temp_dir, "thumbnail.jpg")
+        output_path = os.path.join(self.temp_dir, "thumbnail.webp")
         timestamp = 1 if duration > 1 else 0
         
         (
             ffmpeg
             .input(input_url, ss=timestamp)
             .filter('scale', 320, -1)
-            .output(output_path, vframes=1)
+            .output(
+                output_path, 
+                vframes=1, 
+                vcodec='libwebp',      
+                **{'qscale': 75} 
+            )
             .run(quiet=True, overwrite_output=True)
         )
         
-        thumb_key = f"processed/{self.asset.id}/thumbnail.jpg"
+        thumb_key = f"processed/{self.asset.id}/thumbnail.webp"
+        
         with open(output_path, "rb") as f:
-            s3.upload_fileobj(f, self.bucket, thumb_key, ExtraArgs={"ContentType": "image/jpeg"})
+            s3.upload_fileobj(f, self.bucket, thumb_key, ExtraArgs={
+                "ContentType": "image/webp", 
+                "CacheControl": "max-age=31536000"
+            })
         
         return thumb_key
 
