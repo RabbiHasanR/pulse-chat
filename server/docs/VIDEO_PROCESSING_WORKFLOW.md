@@ -1,164 +1,202 @@
-# Video Processing & HLS Workflow
+Here is the comprehensive, **Production-Grade Documentation** for your Pulse Chat Video Processing System.
 
-## Overview
-This document outlines the architecture for processing video uploads in Pulse Chat. The system transforms raw, large video files into optimized **HLS (HTTP Live Streaming)** playlists with adaptive bitrates (1080p, 720p, etc.). It features **Real-Time Progress Tracking**, allowing the frontend to display a smooth percentage loader to the user.
-
-## Architecture Diagram
-
-
-The workflow consists of three main components working in sync:
-1.  **The Celery Worker (`tasks.py`):** The orchestrator that manages the job and throttles updates.
-2.  **The Video Processor (`video_processor.py`):** The engine that runs FFmpeg to transcode video.
-3.  **The Progress Tracker (`ffmpeg_progress.py`):** A TCP socket listener that calculates real-time percentage.
+This document details the architecture, code flow, and design rationale based on the specific code modules you provided.
 
 ---
 
-## 1. The Video Processor (`video_processor.py`)
+# 📚 Pulse Chat Video Processing Architecture
 
-### Strategy: Zero-Download Streaming
-Instead of downloading a 1GB file to the worker's disk (slow, high RAM/Disk usage), we use **Presigned S3 URLs**. FFmpeg streams the video directly from S3 over the network (`https://...`).
+## **1. System Overview**
 
-### Step-by-Step Workflow
+This system transforms raw, large video uploads into **Adaptive HLS Streams** (like Netflix/YouTube). It is designed for **High Availability**, **Resilience** (Crash Recovery), and **Instant User Feedback** (Progressive Playback).
 
-1.  **Probing:**
-    The processor inspects video metadata (resolution, duration, rotation) without downloading the file.
-    * *Example:* Input is `1920x1080` (1080p), Duration is `60s`.
+### **The Core Philosophy**
 
-2.  **Thumbnail Generation (0-5% Progress):**
-    * Extracts a frame at `t=1s` (avoids black frames at start).
-    * Uploads it to S3 (`processed/{id}/thumbnail.jpg`).
-    * **Callback:** Immediately notifies the Task "Thumbnail is ready!" so the UI can show a preview image.
-
-3.  **Smart Resolution Logic:**
-    Calculates HLS variants based on input size. It **never upscales**.
-    * Input 1080p → Generates 1080p, 720p, 480p, 360p, 240p.
-    * Input 480p → Generates 480p, 360p, 240p.
-
-4.  **HLS Transcoding (5-100% Progress):**
-    Loops through each target resolution.
-    * Starts FFmpeg to slice the stream into `.ts` chunks (10s each).
-    * While FFmpeg runs, it reports raw time data to a local TCP socket.
-    * Uploads chunks and `.m3u8` playlists to S3.
-
-5.  **Cleanup:**
-    * Deletes the original raw video from S3 to save storage costs.
-    * Cleans up local temporary files.
+1. **Zero-Download Transcoding:** We stream input directly from S3 to FFmpeg to avoid filling worker disk space.
+2. **Progressive Availability:** The user can start watching (at 240p) while the HD versions process in the background.
+3. **Stateless Resumability:** If a worker crashes, the next worker picks up exactly where the last one left off.
 
 ---
 
-## 2. FFmpeg Progress Tracker (`ffmpeg_progress.py`)
+## **2. Workflow Diagram**
 
-FFmpeg does not output a simple percentage. It outputs "time processed" (e.g., "I have processed 00:00:15"). We must calculate the percentage manually.
-
-### How it works:
-1.  **Socket Server:** The Python class opens a temporary TCP server on a random port (e.g., `localhost:45123`).
-2.  **FFmpeg Hook:** We pass the argument `-progress tcp://127.0.0.1:45123` to FFmpeg.
-3.  **Math Logic:**
-    * FFmpeg sends: `out_time_ms=15000000` (15 seconds).
-    * Total Video Duration: `60 seconds`.
-    * Calculation: `(15 / 60) * 100 = 25%`.
-4.  **Weighted Progress:**
-    Since we run FFmpeg multiple times (once per resolution), the tracker scales the percentage.
-    * If we have 4 resolutions, finishing one resolution adds ~23.75% to the *Global Progress*.
+1. **Client:** Completes S3 Upload  Calls API.
+2. **API:** Validates  Dispatches Celery Task (Async).
+3. **Worker:** Tracks Progress  Generates Thumbnail  Transcodes HLS.
+4. **Sockets:** Stream updates to Frontend (2% intervals).
+5. **Player:** Loads `master.m3u8` as soon as the first quality is ready.
 
 ---
 
-## 3. The Celery Task (`tasks.py`)
+## **3. Component Breakdown**
 
-The Task acts as a **Throttler**. Sending a WebSocket update for every millisecond of progress would crash the frontend and database.
+### **A. The Trigger: `CompleteUpload` View**
 
-### The "Smart Notification" Logic
+**File:** `views.py`
+**Role:** The Handoff. It acknowledges the upload and passes control to the background worker.
 
-| Action | Frequency | Purpose |
-| :--- | :--- | :--- |
-| **WebSocket Update** | Every **2%** change | Keeps the UI circle loader smooth and responsive. |
-| **Database Update** | Every **10%** change | Persists state in case of restart, reduces SQL write load. |
-| **Thumbnail Event** | **Immediate** | Sent the moment the JPG is ready. |
+* **S3 Multipart Completion:**
+* Code: `s3.complete_multipart_upload(...)`
+* *Why:* Large files are uploaded in chunks. This command stitches them together on AWS S3.
 
-### Logic Flow
 
+* **Asset Status:**
+* Code: `asset.processing_status = "queued"`
+* *Why:* Ensures the asset is marked as ready for processing but prevents race conditions if the user hits the endpoint twice.
+
+
+* **Immediate Feedback:**
+* Code: `notify_message_event.delay(..., stage="processing")`
+* *Why:* The UI immediately replaces the "Uploading..." bar with a "Processing..." spinner.
+
+
+* **Task Routing:**
+* Code: `if kind == VIDEO: process_video_task.delay(asset.id)`
+* *Why:* Routes heavy video tasks to a dedicated `video_queue` (high CPU workers), keeping light tasks (images) separate.
+
+
+
+### **B. The Orchestrator: `process_video_task**`
+
+**File:** `tasks.py`
+**Role:** Project Manager. It manages the lifecycle, handles errors, and throttles updates.
+
+1. **Progress Throttling (The "Anti-Spam" Logic):**
+* **Problem:** FFmpeg updates 10 times a second. Sending 10 WebSockets/sec would crash the frontend.
+* **Solution:**
 ```python
-def on_progress(percent, thumb_key=None):
-    # 1. Immediate UI Feedback (Thumbnail)
-    if thumb_key:
-        save_thumbnail(thumb_key)
-        notify_ui(stage="thumbnail_ready")
-
-    # 2. WebSocket Throttling (2%)
-    if percent - last_ws_update >= 2:
-        notify_ui(progress=percent)
-        last_ws_update = percent
-
-    # 3. Database Throttling (10%)
-    if percent - last_db_update >= 10:
-        update_db(progress=percent)
-        last_db_update = percent
+if abs(percent - last_ws_progress) >= 2:
+    notify_message_event.delay(...)
 
 ```
 
 
+* **Result:** UI updates smoothly every 2%, reducing network load by 90%.
+
+
+2. **The "Playable" Callback (The Netflix Trick):**
+* **Code:** `on_playable(master_key)`
+* **Logic:** Triggered as soon as **240p** is done.
+* **Action:**
+1. Updates DB `object_key` to point to the `.m3u8` playlist.
+2. Sends `stage: "playable"` to UI.
+
+
+* **Result:** The "Play" button appears after ~15 seconds, even if the 1080p job takes 5 minutes.
+
+
+3. **Resumable Checkpoints:**
+* **Code:** `on_checkpoint(variant_name)`
+* **Logic:** Saves `hls_parts: {'240p': True}` to the DB.
+* **Why:** If the worker crashes (OOM) during 720p, the retry task checks DB, skips 240p, and resumes 720p immediately.
+
+
+4. **Smart Retries:**
+* **Code:** `except (BotoCoreError...): retry(...)`
+* **Logic:** Retries on Network errors (S3 down), but **Fails Fast** on Logic errors (corrupt file), preventing infinite loops.
 
 
 
+### **C. The Engine: `VideoProcessor**`
+
+**File:** `video_processor.py`
+**Role:** The Factory. Executes the FFmpeg commands.
+
+1. **Isolation (`tempfile.mkdtemp`):**
+* Creates a unique folder `/tmp/job_xyz/` for every task.
+* *Why:* Prevents file collisions if multiple workers run on the same server.
+
+
+2. **Input Streaming (`get_input_url`):**
+* Generates a signed S3 URL.
+* *Why:* FFmpeg reads from `https://s3...` directly. We **do not download** the 2GB raw file to disk.
+
+
+3. **WebP Thumbnails:**
+* **Code:** `vcodec='libwebp', qscale=75`
+* *Why:* WebP is 30% smaller than JPEG. `qscale=75` is the visual sweet spot.
+
+
+4. **The "Smallest First" Strategy:**
+* **Code:** `valid_resolutions.sort(key=lambda x: x['h'])`
+* **Logic:** Processes **240p  1080p**.
+* *Why:* Essential for "Progressive Playback". If we did 1080p first, the user would wait minutes to watch anything.
+
+
+5. **Clean-As-You-Go:**
+* **Code:** `shutil.rmtree(variant_dir)` inside the loop.
+* **Why:** Immediately deletes the 500MB of `.ts` files after upload. Keeps local disk usage low (<1GB) even for 4K videos.
 
 
 
-# Video Processing & HLS Workflow
+### **D. The Translator: `FFmpegProgressTracker**`
 
-## Overview
-This document outlines the architecture for processing video uploads in Pulse Chat. The system transforms raw, large video files into optimized **HLS (HTTP Live Streaming)** playlists with adaptive bitrates. It features **Real-Time Progress Tracking** for UI feedback and **Fault Tolerance** to resume processing after server crashes.
+**File:** `ffmpeg_progress.py`
+**Role:** The Interpreter. Bridges the gap between C++ (FFmpeg) and Python.
 
-## 1. The Video Processor (`video_processor.py`)
+1. **TCP Socket Server:**
+* **Code:** `socket.bind(('localhost', 0))`
+* *Why:* Parsing terminal output (`stdout`) is brittle. FFmpeg has a native mode (`-progress tcp://...`) to send machine-readable data to a port.
 
-### Strategy: Zero-Download Streaming
-Instead of downloading a 1GB file to the worker's disk (which is slow and uses high RAM/Disk), we use **Presigned S3 URLs**. FFmpeg streams the video directly from S3 over the network (`https://...`), keeping disk usage minimal.
 
-### Workflow Steps
+2. **Time-to-Percentage Math:**
+* **Input:** `out_time_us=15000000` (15 seconds processed).
+* **Math:** `(15s / Total Duration) * 100`.
+* **Output:** Calls `on_progress(25.0)`.
 
-1.  **Probing:**
-    The processor inspects video metadata (resolution, duration) without downloading the file.
 
-2.  **Thumbnail Generation (0-5%):**
-    * Extracts a frame at `t=1s`.
-    * **Callback:** Immediately notifies the Task "Thumbnail is ready!" so the UI can show a preview image.
-
-3.  **Smart Resolution Logic:**
-    Calculates HLS variants based on input size (Never upscales).
-    * Input 1080p → Generates 1080p, 720p, 480p, 360p, 240p.
-    * Input 480p → Generates 480p, 360p, 240p.
-
-4.  **HLS Transcoding (5-100%):**
-    Loops through each target resolution:
-    * **Checkpoint Check:** Checks the database (`hls_parts`) to see if this resolution was already finished (in case of a previous crash). If yes, it skips transcoding.
-    * **Transcode:** Runs FFmpeg to slice the stream into `.ts` chunks.
-    * **Progress Tracking:** FFmpeg reports raw time data to a local TCP socket.
-    * **Save Checkpoint:** After uploading chunks, updates the DB to mark this resolution as "Done".
-
-5.  **Cleanup:**
-    * Deletes the original raw video from S3.
-    * Cleans up local temporary files.
 
 ---
 
-## 2. Progress Tracking & Throttling
+## **4. Data Flow & Notification Events**
 
-### FFmpeg Progress Tracker
-A TCP socket listener (`ffmpeg_progress.py`) captures raw time data from FFmpeg (e.g., "00:00:15 processed") and converts it to a percentage (e.g., "25%").
+Here is the exact sequence of events the Frontend Client receives via WebSocket.
 
-### Notification Throttling (Celery Task)
-To prevent crashing the frontend or database with too many updates:
-
-| Action | Frequency | Purpose |
-| :--- | :--- | :--- |
-| **WebSocket Update** | Every **2%** | Keeps the UI circle loader smooth. |
-| **Database Update** | Every **10%** | Persists state, reduces SQL write load. |
-| **Thumbnail Event** | **Immediate** | Sent the moment the JPG is ready. |
+| Stage | Event Payload (Simplified) | Frontend Action |
+| --- | --- | --- |
+| **1. Upload** | *(API Response 200 OK)* | Show "Processing..." spinner. |
+| **2. Thumbnail** | `type: "update", stage: "thumbnail_ready", url: "thumb.webp"` | Replace spinner with blurred thumbnail image. |
+| **3. Processing** | `type: "update", progress: 12.5` | Update circular progress bar to 12.5%. |
+| **4. Playable** | `type: "update", stage: "playable", url: "master.m3u8"` | **Enable Play Button.** Video plays in Low Quality. |
+| **5. Processing** | `type: "update", progress: 45.0` | Update progress bar (Running in background). |
+| **6. Done** | `type: "update", stage: "done", progress: 100` | Remove progress bar. Video is now Full HD. |
 
 ---
 
-## 3. Fault Tolerance (Resume Capability)
+## **5. Storage Structure (S3)**
 
-If the server crashes (e.g., OOM Kill, Power Outage) while processing `720p`:
-1.  **Celery Retry:** The task is re-queued automatically (`acks_late=True`).
-2.  **State Check:** The worker starts, loads the asset, and sees `variants['hls_parts'] = {'1080p': True}`.
-3.  **Resume:** It **skips** 1080p (saving ~5 mins) and starts immediately at 720p.
+How the files are organized in the bucket:
+
+```text
+processed/{asset_id}/
+├── thumbnail.webp        (Cache: 1 Year)
+└── hls/
+    ├── master.m3u8       (Cache: No-Cache - Updates frequently)
+    ├── 240p/
+    │   ├── index.m3u8
+    │   ├── seg_000.ts    (Cache: 1 Year)
+    │   └── seg_001.ts
+    └── 1080p/
+        ├── index.m3u8
+        └── ...
+
+```
+
+* **`master.m3u8`**: The "Menu". Lists available qualities. Updated incrementally.
+* **`.ts` segments**: The actual video chunks. Immutable and heavily cached.
+
+---
+
+## **6. Failure Recovery Strategy**
+
+What happens if the server explodes?
+
+| Failure Type | Handling Strategy |
+| --- | --- |
+| **Network Error (S3)** | `process_video_task` catches `BotoCoreError`. **Exponential Backoff** retry (10s, 20s, 40s). |
+| **Corrupt Video File** | `process_video_task` catches generic `Exception`. **Fails Fast** (State = Failed) to notify user immediately. |
+| **Worker Crash (OOM)** | Celery `acks_late=True` requeues task. New worker checks DB `hls_parts`, skips finished resolutions, and finishes the job. |
+
+---
+
+This documentation covers the full lifecycle of your video processing pipeline, explaining not just *what* the code does, but *why* it is architected this way for a production environment.
