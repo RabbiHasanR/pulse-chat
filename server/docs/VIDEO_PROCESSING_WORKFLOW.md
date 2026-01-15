@@ -1,10 +1,4 @@
-Here is the comprehensive, **Production-Grade Documentation** for your Pulse Chat Video Processing System.
-
-This document details the architecture, code flow, and design rationale based on the specific code modules you provided.
-
----
-
-# 📚 Pulse Chat Video Processing Architecture
+# 📘 Pulse Chat Video Processing Architecture
 
 ## **1. System Overview**
 
@@ -15,14 +9,15 @@ This system transforms raw, large video uploads into **Adaptive HLS Streams** (l
 1. **Zero-Download Transcoding:** We stream input directly from S3 to FFmpeg to avoid filling worker disk space.
 2. **Progressive Availability:** The user can start watching (at 240p) while the HD versions process in the background.
 3. **Stateless Resumability:** If a worker crashes, the next worker picks up exactly where the last one left off.
+4. **Resilient "Partial Success":** If a job fails halfway (e.g., after 480p), the system marks it as `partial` instead of `failed`, allowing users to watch the lower-quality version while flagging it for admin review.
 
 ---
 
 ## **2. Workflow Diagram**
 
-1. **Client:** Completes S3 Upload  Calls API.
-2. **API:** Validates  Dispatches Celery Task (Async).
-3. **Worker:** Tracks Progress  Generates Thumbnail  Transcodes HLS.
+1. **Client:** Completes S3 Upload → Calls API.
+2. **API:** Validates → Dispatches Celery Task (Async).
+3. **Worker:** Tracks Progress → Generates Thumbnail → Transcodes HLS.
 4. **Sockets:** Stream updates to Frontend (2% intervals).
 5. **Player:** Loads `master.m3u8` as soon as the first quality is ready.
 
@@ -91,9 +86,15 @@ if abs(percent - last_ws_progress) >= 2:
 * **Why:** If the worker crashes (OOM) during 720p, the retry task checks DB, skips 240p, and resumes 720p immediately.
 
 
-4. **Smart Retries:**
-* **Code:** `except (BotoCoreError...): retry(...)`
-* **Logic:** Retries on Network errors (S3 down), but **Fails Fast** on Logic errors (corrupt file), preventing infinite loops.
+4. **Smart Retries & Partial Success:**
+* **Retry Logic:** Retries on Network errors (S3 down) with exponential backoff.
+* **Partial Success Handler:**
+* If `max_retries` is hit or a logic error occurs:
+* **Check:** Did we successfully generate *any* playable variant (e.g., 240p)?
+* **Yes:** Set status to `partial`. The user can still watch the video.
+* **No:** Set status to `failed`. Show error icon.
+
+
 
 
 
@@ -119,13 +120,23 @@ if abs(percent - last_ws_progress) >= 2:
 
 4. **The "Smallest First" Strategy:**
 * **Code:** `valid_resolutions.sort(key=lambda x: x['h'])`
-* **Logic:** Processes **240p  1080p**.
+* **Logic:** Processes **240p → 1080p**.
 * *Why:* Essential for "Progressive Playback". If we did 1080p first, the user would wait minutes to watch anything.
 
 
 5. **Clean-As-You-Go:**
 * **Code:** `shutil.rmtree(variant_dir)` inside the loop.
-* **Why:** Immediately deletes the 500MB of `.ts` files after upload. Keeps local disk usage low (<1GB) even for 4K videos.
+* *Why:* Immediately deletes the 500MB of `.ts` files after upload. Keeps local disk usage low (<1GB) even for 4K videos.
+
+
+6. **Smart Caching (New):**
+* **Code:** Checks if the current variant is the *last* one.
+* **Logic:**
+* **Intermediate Uploads:** `Cache-Control: no-cache` (File is still growing).
+* **Final Upload (100%):** `Cache-Control: max-age=31536000` (File is immutable).
+
+
+* **Why:** Saves bandwidth costs. Once a video is fully processed, clients cache the playlist for 1 year.
 
 
 
@@ -160,6 +171,7 @@ Here is the exact sequence of events the Frontend Client receives via WebSocket.
 | **4. Playable** | `type: "update", stage: "playable", url: "master.m3u8"` | **Enable Play Button.** Video plays in Low Quality. |
 | **5. Processing** | `type: "update", progress: 45.0` | Update progress bar (Running in background). |
 | **6. Done** | `type: "update", stage: "done", progress: 100` | Remove progress bar. Video is now Full HD. |
+| **7. Partial** | `type: "update", stage: "failed", status: "partial"` | Hide progress bar. Keep Play button enabled (Playable but low-res). |
 
 ---
 
@@ -171,7 +183,7 @@ How the files are organized in the bucket:
 processed/{asset_id}/
 ├── thumbnail.webp        (Cache: 1 Year)
 └── hls/
-    ├── master.m3u8       (Cache: No-Cache - Updates frequently)
+    ├── master.m3u8       (Cache Logic: "no-cache" until done, then "1 Year")
     ├── 240p/
     │   ├── index.m3u8
     │   ├── seg_000.ts    (Cache: 1 Year)
@@ -182,8 +194,12 @@ processed/{asset_id}/
 
 ```
 
-* **`master.m3u8`**: The "Menu". Lists available qualities. Updated incrementally.
-* **`.ts` segments**: The actual video chunks. Immutable and heavily cached.
+* **`master.m3u8`**: The "Menu". Lists available qualities.
+* **During Processing / Partial Failure:** `Cache-Control: no-cache`. Clients must check for updates/fixes.
+* **After Success:** `Cache-Control: max-age=31536000`. Clients cache it forever.
+
+
+* **`.ts` segments**: The actual video chunks. Immutable and always cached for 1 year.
 
 ---
 
@@ -191,11 +207,16 @@ processed/{asset_id}/
 
 What happens if the server explodes?
 
-| Failure Type | Handling Strategy |
-| --- | --- |
-| **Network Error (S3)** | `process_video_task` catches `BotoCoreError`. **Exponential Backoff** retry (10s, 20s, 40s). |
-| **Corrupt Video File** | `process_video_task` catches generic `Exception`. **Fails Fast** (State = Failed) to notify user immediately. |
-| **Worker Crash (OOM)** | Celery `acks_late=True` requeues task. New worker checks DB `hls_parts`, skips finished resolutions, and finishes the job. |
+| Failure Type | Handling Strategy | S3 Cache State |
+| --- | --- | --- |
+| **Network Error (S3)** | `process_video_task` catches `BotoCoreError`. **Exponential Backoff** retry (10s, 20s, 40s). | `no-cache` |
+| **Worker Crash (OOM)** | Celery `acks_late=True` requeues task. New worker checks DB `hls_parts`, skips finished resolutions, and finishes the job. | `no-cache` |
+| **Logic Error (Bug)** | Catch `Exception`. **Check if playable.** <br>
+
+<br> - If Yes: Mark `partial`. User watches low-res. <br>
+
+<br> - If No: Mark `failed`. User sees error. | `no-cache` (Allows future retry/fix) |
+| **Success** | All resolutions processed. DB Status: `done`. | `max-age=1 Year` |
 
 ---
 
