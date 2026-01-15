@@ -351,23 +351,43 @@ def _handle_failure(asset_id, error):
     print(f"Processing Failed for Asset {asset_id}: {error}")
     try:
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
-        asset.processing_status = "failed"
-        asset.save(update_fields=["processing_status"])
+        
+        # --- LOGIC UPDATE: CHECK FOR PARTIAL SUCCESS ---
+        # Check if we have successfully processed at least one part
+        hls_parts = asset.variants.get('hls_parts', {})
+        is_playable = bool(hls_parts) # True if dictionary is not empty
+        
+        if is_playable:
+            new_status = "partial"
+            # Optional: Add a note about the error in variants for debugging
+            asset.variants['error_log'] = str(error)
+        else:
+            new_status = "failed"
+        # -----------------------------------------------
+
+        asset.processing_status = new_status
+        asset.save(update_fields=["processing_status", "variants"])
         
         msg = asset.message
+        
+        # Notification Payload
         payload = {
-            "type": "chat_message",
-            "success": False,
+            "type": "chat_message_update", # Use update type so we don't confuse the frontend
+            "success": False, # Still technically 'false' because it didn't finish 100%
             "data": {
                 "message_id": msg.id,
-                "status": "pending",
-                "processing_status": "failed",
-                "stage": "failed",
+                "status": "sent", # If partial, it is technically "sent" and viewable
+                "processing_status": new_status,
+                "stage": "failed", # UI can show an error icon
                 "error": str(error),
                 "sender_id": msg.sender_id,
                 "receiver_id": msg.receiver_id,
+                
+                # IMPORTANT: If partial, send the URL so the UI keeps the video player!
+                "media_url": asset.url if is_playable else None
             }
         }
         notify_message_event.delay(payload)
-    except Exception:
-        pass
+        
+    except Exception as e:
+        print(f"Critical DB Error in Failure Handler: {e}")

@@ -263,7 +263,18 @@ class VideoProcessor:
             
             # Upload the new Master Playlist immediately
             # This enables "Progressive Playback" (Watch 240p while 1080p processes)
-            self._update_master_playlist(master_playlist_lines, master_key)
+            # --- INTELLIGENT CACHING OPTIMIZATION ---
+            # If this is the LAST variant, the playlist is final/immutable.
+            # We can cache it forever (1 Year).
+            is_last_variant = (i == total_variants - 1)
+            
+            if is_last_variant:
+                cache_control = "max-age=31536000" # Final Upload: Cache heavily
+            else:
+                cache_control = "no-cache"       # Intermediate: Do not cache
+            
+            self._update_master_playlist(master_playlist_lines, master_key, cache_control)
+            # ----------------------------------------
             
             # Notify "Playable" (Only on the first successful variant)
             if i == 0 and playable_callback:
@@ -272,8 +283,7 @@ class VideoProcessor:
 
         return master_key
 
-    def _update_master_playlist(self, lines, s3_key):
-        """Helper to write and upload the master playlist"""
+    def _update_master_playlist(self, lines, s3_key, cache_control="no-cache"):
         content = "\n".join(lines)
         master_path = os.path.join(self.temp_dir, "master.m3u8")
         
@@ -283,7 +293,7 @@ class VideoProcessor:
         with open(master_path, "rb") as f:
             s3.upload_fileobj(f, self.bucket, s3_key, ExtraArgs={
                 "ContentType": "application/x-mpegURL",
-                "CacheControl": "no-cache" # Important! Tells player to always check for new qualities
+                "CacheControl": cache_control # <--- Dynamic Header
             })
 
     def _upload_directory(self, local_dir, s3_prefix):

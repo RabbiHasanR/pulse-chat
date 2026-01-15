@@ -193,6 +193,7 @@ class MediaAsset(models.Model):
             ("queued", "Queued"),
             ("running", "Running"),
             ("done", "Done"),
+            ("partial", "Partial"),
             ("failed", "Failed"),
         ],
         db_index=True,
