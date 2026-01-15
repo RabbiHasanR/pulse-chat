@@ -18,7 +18,7 @@ This system transforms raw, large video uploads into **Adaptive HLS Streams** (l
 1. **Client:** Completes S3 Upload → Calls API.
 2. **API:** Validates → Dispatches Celery Task (Async).
 3. **Worker:** Tracks Progress → Generates Thumbnail → Transcodes HLS.
-4. **Sockets:** Stream updates to Frontend (2% intervals).
+4. **Sockets:** Stream updates to Frontend (2% intervals).s
 5. **Player:** Loads `master.m3u8` as soon as the first quality is ready.
 
 ---
