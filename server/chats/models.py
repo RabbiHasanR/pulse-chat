@@ -115,6 +115,7 @@ class ChatMessage(models.Model):
         VIDEO = "video", "Video"
         AUDIO = "audio", "Audio"
         FILE  = "file",  "File"
+        ALBUM = "album", "Album"
 
     class Status(models.TextChoices):
         PENDING   = "pending",   "Pending"

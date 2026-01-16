@@ -1,89 +1,96 @@
 from rest_framework import serializers
+import math
 
 MIN_PART_SIZE = 5 * 1024 * 1024        # 5MB
 MAX_PART_SIZE = 512 * 1024 * 1024      # 512MB (policy cap)
 MAX_PARTS     = 10_000                 # S3 limit
-DIRECT_THRESHOLD = 5 * 1024 * 1024    # 5MB
+DIRECT_THRESHOLD = 5 * 1024 * 1024     # 5MB
 MAX_BATCH_COUNT  = 500
 
-DEFAULT_EXPIRES_DIRECT = 300  # 5 minutes (Enough for small files)
-DEFAULT_EXPIRES_PART = 3600   # 1 hour (Needed for large 5GB+ uploads)
+DEFAULT_EXPIRES_DIRECT = 300
+DEFAULT_EXPIRES_PART = 3600
 
-class PrepareUploadIn(serializers.Serializer):
-    # first call
-    file_name = serializers.CharField(required=False)
-    file_size = serializers.IntegerField(required=False, min_value=1)
-    content_type = serializers.CharField(required=False)
-    message_type = serializers.ChoiceField(choices=['image', 'video', 'file', 'audio'], required=False)
-    receiver_id = serializers.IntegerField(required=False, min_value=1)
+class AttachmentItem(serializers.Serializer):
+    """
+    Validates a single file within the album.
+    """
+    file_name = serializers.CharField()
+    file_size = serializers.IntegerField(min_value=1)
+    content_type = serializers.CharField()
+    # "kind" helps frontend distinguish video vs image in the grid immediately
+    kind = serializers.ChoiceField(choices=['image', 'video', 'audio', 'file']) 
 
+    # Multipart fields (optional, only for big files)
     client_part_size = serializers.IntegerField(required=False, min_value=MIN_PART_SIZE, max_value=MAX_PART_SIZE)
     client_num_parts = serializers.IntegerField(required=False, min_value=1)
-    batch_count = serializers.IntegerField(required=False, min_value=1, max_value=MAX_BATCH_COUNT)
-
-    # next-batch call
-    upload_id = serializers.CharField(required=False)
-    object_key = serializers.CharField(required=False)
-    start_part = serializers.IntegerField(required=False, min_value=1)
 
     def validate(self, d):
-        # next-batch path
-        if d.get("upload_id"):
-            if not d.get("object_key"):
-                raise serializers.ValidationError({"object_key": "object_key is required with upload_id"})
-            return d
+        file_size = d["file_size"]
 
-        # first-call path
-        required = ["file_name", "file_size", "content_type", "message_type", "receiver_id"]
-        missing = [k for k in required if k not in d]
-        if missing:
-            raise serializers.ValidationError({"detail": f"Missing fields: {', '.join(missing)}"})
-
-        file_size = int(d["file_size"])
-
-        # direct -> no multipart fields required
+        # 1. Direct Upload Logic (Small files)
         if file_size <= DIRECT_THRESHOLD:
             return d
 
-        # multipart -> must include client chunking
+        # 2. Multipart Upload Logic (Large files)
+        # Must include chunking details
         for k in ("client_part_size", "client_num_parts"):
             if k not in d:
-                raise serializers.ValidationError({k: "This field is required for multipart uploads"})
+                raise serializers.ValidationError({k: "Required for files > 5MB"})
 
-        cps = int(d["client_part_size"])
-        cnp = int(d["client_num_parts"])
+        cps = d["client_part_size"]
+        cnp = d["client_num_parts"]
 
-        import math
         expected = math.ceil(file_size / cps)
         if cnp != expected:
             raise serializers.ValidationError({
-                "client_num_parts": f"client_num_parts mismatch. Expected {expected} for file_size={file_size} and client_part_size={cps}"
+                "client_num_parts": f"Mismatch. Expected {expected} parts."
             })
         if cnp > MAX_PARTS:
             raise serializers.ValidationError({
-                "client_num_parts": f"Too many parts. Got {cnp}, max allowed is {MAX_PARTS}. Increase client_part_size."
+                "client_num_parts": "Too many parts. Increase part size."
             })
         return d
 
 
+class PrepareUploadIn(serializers.Serializer):
+    # --- MODE A: NEW ALBUM CREATION ---
+    receiver_id = serializers.IntegerField(required=False, min_value=1)
+    text = serializers.CharField(required=False, allow_blank=True) # Caption for the album
+    attachments = serializers.ListField(
+        child=AttachmentItem(), 
+        required=False, 
+        allow_empty=False
+    )
 
-    
+    # --- MODE B: NEXT-BATCH (For a single large file renewal) ---
+    upload_id = serializers.CharField(required=False)
+    object_key = serializers.CharField(required=False)
+    start_part = serializers.IntegerField(required=False, min_value=1)
+    batch_count = serializers.IntegerField(required=False, min_value=1, max_value=MAX_BATCH_COUNT)
 
+    def validate(self, d):
+        # Mode B: Renewing URLS for an existing upload
+        if d.get("upload_id"):
+            if not d.get("object_key"):
+                raise serializers.ValidationError({"object_key": "Required with upload_id"})
+            return d
+
+        # Mode A: Creating new album
+        if not d.get("receiver_id"):
+            raise serializers.ValidationError({"receiver_id": "This field is required."})
+        
+        if not d.get("attachments"):
+            raise serializers.ValidationError({"attachments": "At least one file is required."})
+
+        return d
+
+# CompleteUploadIn remains mostly the same, ensuring we identify assets correctly
 class CompleteUploadIn(serializers.Serializer):
     object_key = serializers.CharField()
     upload_id = serializers.CharField(required=False)
-    parts = serializers.ListField(
-        child=serializers.DictField(), required=False
-    )
-
+    parts = serializers.ListField(child=serializers.DictField(), required=False)
+    
     def validate(self, data):
-        parts = data.get("parts")
-        upload_id = data.get("upload_id")
-
-        if parts and not upload_id:
-            raise serializers.ValidationError("upload_id is required when completing multipart upload.")
-
-        if upload_id and not parts:
-            raise serializers.ValidationError("parts are required when completing multipart upload.")
-
+        if data.get("parts") and not data.get("upload_id"):
+            raise serializers.ValidationError("upload_id required for multipart completion")
         return data
