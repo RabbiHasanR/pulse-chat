@@ -19,6 +19,7 @@ from chats.models import ChatMessage, MediaAsset
 # Processors
 from utils.media_processors.image import ImageProcessor
 from utils.media_processors.video import VideoProcessor
+from utils.media_processors.audio import AudioProcessor
 
 # ----------------------------------------------------------------------------
 # 1. NOTIFICATION TASK (Lightweight - Default Queue)
@@ -334,10 +335,79 @@ def process_image_task(self, asset_id):
 # ----------------------------------------------------------------------------
 # 4. GENERIC FILE/AUDIO TASKS (Light - File/Audio Queue)
 # ----------------------------------------------------------------------------
-@shared_task(bind=True, queue='audio_queue')
+@shared_task(
+    bind=True, 
+    queue='audio_queue',          # Dedicated queue (keeps video workers free)
+    acks_late=True,               # Resilience: If worker crashes, task is requeued
+    reject_on_worker_lost=False,
+    
+    # TIMEOUT SETTINGS
+    # 15 minutes allow for large uploads (e.g. 1-hour lectures/podcasts)
+    # without cutting off the user prematurely.
+    soft_time_limit=900,          # 15 min: Raises exception (Allows cleanup)
+    time_limit=930,               # 15.5 min: Hard Kill (SIGKILL)
+    
+    max_retries=3                 # Retry network glitches
+)
 def process_audio_task(self, asset_id):
-    # Future: Add AudioProcessor logic here
-    _finalize_asset(asset_id, {})
+    try:
+        # 1. Optimistic Status Update (DB)
+        # Mark as running immediately so the user sees "Processing..."
+        rows = MediaAsset.objects.filter(id=asset_id).update(processing_status="running")
+        if rows == 0: 
+            return # Asset was deleted while queued
+
+        asset = MediaAsset.objects.select_related("message").get(id=asset_id)
+        msg = asset.message
+
+        # 2. Notify Frontend (WebSocket)
+        # Triggers the blue spinner on the client side
+        notify_message_event.delay({
+            "type": "chat_message_update", 
+            "data": {
+                "message_id": msg.id,
+                "asset_id": asset.id,
+                "processing_status": "running",
+                "stage": "processing"
+            }
+        })
+
+        # 3. Process (Validate -> Transcode -> Upload -> Cleanup)
+        # The AudioProcessor handles "Zero-Disk" streaming and security checks internally
+        processor = AudioProcessor(asset)
+        result_data = processor.process()
+        
+        # 4. Success: Finalize
+        # Saves the waveform JSON, updates status to 'done', and notifies 'playable'
+        _finalize_asset(asset_id, result_data)
+
+    # --- ERROR HANDLING STRATEGY ---
+
+    except ValueError as e:
+        # SECURITY / VALIDATION ERROR
+        # Do NOT retry. The file is dangerous (virus) or corrupt.
+        # The processor has already deleted the file from S3 to sanitize.
+        _handle_failure(asset_id, e)
+
+    except SoftTimeLimitExceeded:
+        # TIMEOUT ERROR
+        # Task took longer than 15 mins.
+        _handle_failure(asset_id, Exception("Processing timed out (File too large)"))
+
+    except (BotoCoreError, ClientError, ConnectionError) as e:
+        # INFRASTRUCTURE ERROR
+        # S3 is down or network blip. Retry with exponential backoff.
+        try:
+             # Retries in 10s, 20s, 40s
+             raise self.retry(exc=e, countdown=10 * (2 ** self.request.retries))
+        except Exception:
+             # Max retries hit, mark as failed
+             _handle_failure(asset_id, e)
+
+    except Exception as e:
+        # GENERIC/LOGIC ERROR
+        # Code bug or FFmpeg crash. Fail fast.
+        _handle_failure(asset_id, e)
 
 @shared_task(bind=True, queue='file_queue')
 def process_file_task(self, asset_id):
