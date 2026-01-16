@@ -1,79 +1,88 @@
 import io
+import uuid
+import logging
+import magic
 from PIL import Image, ImageOps
-from .base import BaseProcessor
+from utils.aws import s3
 
-# --- Configuration for Chat Images ---
-MAX_DIMENSION = 1920   # 1080p equivalent
-THUMB_DIMENSION = 300  # For message list previews
-QUALITY = 80           # Good compression balance
-FORMAT = "WEBP"        # Modern format
-MIME_TYPE = "image/webp"
+logger = logging.getLogger(__name__)
 
-class ImageProcessor(BaseProcessor):
+# --- SAFETY LIMITS ---
+MAX_FILE_SIZE_MB = 25       # Reject images larger than 25MB
+MAX_PIXEL_COUNT = 89478485  # Standard Pillow Limit (Protect against Decompression Bombs)
+
+class ImageProcessor:
+    def __init__(self, asset):
+        self.asset = asset
+        self.bucket = asset.bucket
+        self.original_key = asset.object_key
+
     def process(self):
-        """
-        Main pipeline:
-        1. Download Raw Image
-        2. Auto-Rotate (Exif data)
-        3. Generate 'Optimized' Main Image (WebP)
-        4. Generate 'Thumbnail' (WebP)
-        5. Upload Both to S3
-        6. DELETE Raw File (via BaseProcessor)
-        7. Return data to update DB
-        """
-        raw_stream = self.download_content()
-        
         try:
-            # Open image
-            img = Image.open(raw_stream)
-            
-            # FIX 1: Force Load Image Data immediately.
-            # This detaches the image from the 'raw_stream' file pointer.
-            # Solves "ValueError: I/O operation on closed file"
-            img.load()
-            
-            # 1. Fix Orientation (Crucial for mobile photos)
+            # 1. REMOTE VALIDATION (Security + Size Check)
+            # Checks Magic Bytes AND File Size header
+            self._validate_remote_header()
+
+            # 2. DOWNLOAD TO RAM
+            # Safe because we capped size at 25MB
+            raw_stream = io.BytesIO()
+            s3.download_fileobj(self.bucket, self.original_key, raw_stream)
+            raw_stream.seek(0)
+
+            # 3. OPEN & DEEP VALIDATION
+            try:
+                img = Image.open(raw_stream)
+                
+                # Check for Decompression Bombs (Massive dimensions)
+                if img.width * img.height > MAX_PIXEL_COUNT:
+                    raise ValueError("Image dimensions too large for processing")
+                
+                img.verify() 
+                
+                raw_stream.seek(0)
+                img = Image.open(raw_stream)
+                img.load()
+            except Exception as e:
+                self._delete_original()
+                raise ValueError(f"Corrupt or unsafe image: {e}")
+
+            # ... (Rest of processing logic: Rotate, Resize, Upload) ...
+            # ... Copy from previous response ...
+             # 4. PROCESSING (Rotate -> Resize -> WebP)
+            # Fix Orientation (Mobile photos often have EXIF rotation)
             img = ImageOps.exif_transpose(img)
-            
-            # 2. Extract Original Dimensions
             original_w, original_h = img.size
 
-            # 3. Process Main Optimized Image
+            # Generate Main Image
             optimized_stream, opt_w, opt_h = self._resize_and_compress(
-                img, MAX_DIMENSION
+                img, 1920 # MAX_DIMENSION
             )
             
-            # 4. Process Thumbnail
+            # Generate Thumbnail
             thumb_stream, _, _ = self._resize_and_compress(
-                img, THUMB_DIMENSION
+                img, 300 # THUMB_DIMENSION
             )
 
-            # FIX 2: Calculate file size BEFORE upload.
-            # Uploading can sometimes close or consume the stream depending on the client.
+            # 5. UPLOAD VARIANTS
+            # Calculate final size for DB
             optimized_stream.seek(0, 2)
             new_size = optimized_stream.tell()
-            optimized_stream.seek(0) # Reset to start for upload
+            optimized_stream.seek(0)
 
-            # 5. Upload to S3
-            main_key = self.upload_content(optimized_stream, MIME_TYPE, "optimized")
-            thumb_key = self.upload_content(thumb_stream, MIME_TYPE, "thumb")
+            main_key = self._upload_variant(optimized_stream, suffix="optimized")
+            thumb_key = self._upload_variant(thumb_stream, suffix="thumb")
 
-            # -----------------------------------------------------------
-            # 6. DELETE RAW FILE (Cost Optimization)
-            # -----------------------------------------------------------
-            if main_key and main_key != self.original_key:
-                self.delete_original()
-            # -----------------------------------------------------------
+            # 6. CLEANUP
+            self._delete_original()
 
-            # 8. Return Result
             return {
-                "object_key": main_key,       # The optimized WebP is now the MAIN file
-                "content_type": MIME_TYPE,    # Updated to image/webp
+                "object_key": main_key,
+                "content_type": "image/webp",
                 "file_size": new_size,
                 "width": opt_w,
                 "height": opt_h,
-                
                 "variants": {
+                    "type": "image",
                     "thumbnail": thumb_key,
                     "original_width": original_w,
                     "original_height": original_h
@@ -81,42 +90,97 @@ class ImageProcessor(BaseProcessor):
             }
 
         except Exception as e:
-            print(f"Image Processing Failed: {e}")
+            logger.error(f"Image Processing Failed: {e}")
             raise e
         finally:
-            raw_stream.close()
+            if 'raw_stream' in locals():
+                raw_stream.close()
 
+    def _validate_remote_header(self):
+        """
+        Fetches metadata to check SIZE and Magic Bytes.
+        """
+        try:
+            # Step A: Check File Size from S3 Metadata first (Zero Cost)
+            head = s3.head_object(Bucket=self.bucket, Key=self.original_key)
+            file_size_bytes = head['ContentLength']
+            file_size_mb = file_size_bytes / (1024 * 1024)
+
+            if file_size_mb > MAX_FILE_SIZE_MB:
+                # Reject huge files. User should send them as 'Document' type.
+                raise ValueError(f"Image too large ({file_size_mb:.1f}MB). Limit is {MAX_FILE_SIZE_MB}MB.")
+
+            # Step B: Check Magic Bytes (Security)
+            response = s3.get_object(
+                Bucket=self.bucket, 
+                Key=self.original_key, 
+                Range='bytes=0-2048'
+            )
+            head_bytes = response['Body'].read()
+            mime = magic.from_buffer(head_bytes, mime=True)
+            
+            allowed = [
+                'image/jpeg', 'image/png', 'image/webp', 
+                'image/gif', 'image/bmp', 'image/tiff'
+            ]
+            
+            if mime not in allowed:
+                raise ValueError(f"Security Alert: Invalid image mime-type '{mime}'")
+                
+        except Exception as e:
+            raise ValueError(f"Remote Validation Error: {str(e)}")
+
+    # ... (_resize_and_compress, _upload_variant, _delete_original remain the same) ...
+     # Copy the previous implementation of _resize_and_compress, _upload_variant, _delete_original here.
     def _resize_and_compress(self, img: Image, max_dim: int):
         """
-        Helper: Resizes image (downscale only), converts to RGB, saves as WebP.
+        Resizes down, converts to RGB, saves as WebP.
         """
-        # Create a copy to prevent modifying the shared image object
         img_copy = img.copy()
         
-        # 1. Convert to RGB (Safety for PNG/RGBA)
         if img_copy.mode not in ("RGB", "RGBA"):
             img_copy = img_copy.convert("RGB")
 
-        # 2. OPTIMIZATION: Only resize if the image is actually larger than max_dim
-        # This saves CPU and prevents any accidental upscaling weirdness.
+        # Downscale only (Never upscale)
         current_w, current_h = img_copy.size
-        
         if current_w > max_dim or current_h > max_dim:
-            # 'thumbnail' creates a thumbnail version no larger than the given size.
-            # It maintains aspect ratio and DOES NOT upscale small images.
             img_copy.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
         
-        # Get final dimensions (might be 1920, or might be 500 if original was small)
-        final_width, final_height = img_copy.size
+        final_w, final_h = img_copy.size
         
-        # 3. Save to buffer
         output = io.BytesIO()
         img_copy.save(
             output, 
-            format=FORMAT, 
-            quality=QUALITY, 
+            format="WEBP", 
+            quality=80, 
             optimize=True
         )
         output.seek(0)
         
-        return output, final_width, final_height
+        return output, final_w, final_h
+
+    def _upload_variant(self, file_obj: io.BytesIO, suffix: str) -> str:
+        folder_path = f"processed/{self.asset.id}"
+        new_filename = f"{uuid.uuid4().hex}_{suffix}.webp"
+        new_key = f"{folder_path}/{new_filename}"
+
+        try:
+            s3.upload_fileobj(
+                file_obj,
+                self.bucket,
+                new_key,
+                ExtraArgs={
+                    "ContentType": "image/webp",
+                    "CacheControl": "max-age=31536000"
+                }
+            )
+            return new_key
+        except Exception as e:
+            logger.error(f"S3 Upload Error: {e}")
+            raise e
+
+    def _delete_original(self):
+        try:
+            s3.delete_object(Bucket=self.bucket, Key=self.original_key)
+        except Exception:
+            pass
