@@ -20,6 +20,7 @@ from chats.models import ChatMessage, MediaAsset
 from utils.media_processors.image import ImageProcessor
 from utils.media_processors.video import VideoProcessor
 from utils.media_processors.audio import AudioProcessor
+from utils.media_processors.file import FileProcessor
 
 # ----------------------------------------------------------------------------
 # 1. NOTIFICATION TASK (Lightweight - Default Queue)
@@ -409,10 +410,75 @@ def process_audio_task(self, asset_id):
         # Code bug or FFmpeg crash. Fail fast.
         _handle_failure(asset_id, e)
 
-@shared_task(bind=True, queue='file_queue')
+@shared_task(
+    bind=True, 
+    queue='file_queue',       # Separate queue (Files process very fast)
+    acks_late=True,           # Resilience: If worker crashes, task is requeued
+    reject_on_worker_lost=False,
+    
+    # TIMEOUT SETTINGS
+    # 5 minutes is generous. PDF thumbnailing takes ~2-10 seconds.
+    # We want to kill stuck processes early to free up workers.
+    soft_time_limit=300,      
+    time_limit=310,
+    
+    max_retries=3
+)
 def process_file_task(self, asset_id):
-    # Files usually don't need processing, just mark done
-    _finalize_asset(asset_id, {})
+    try:
+        # 1. Optimistic Status Update
+        rows = MediaAsset.objects.filter(id=asset_id).update(processing_status="running")
+        if rows == 0: return
+
+        asset = MediaAsset.objects.select_related("message").get(id=asset_id)
+        msg = asset.message
+
+        # 2. Notify Frontend
+        # Even though processing is fast, we notify "Processing" to show the spinner
+        # instead of a static "Queued" state.
+        notify_message_event.delay({
+            "type": "chat_message_update", 
+            "data": {
+                "message_id": msg.id,
+                "asset_id": asset.id,
+                "processing_status": "running",
+                "stage": "processing"
+            }
+        })
+
+        # 3. Process
+        # The FileProcessor decides internally whether to download (PDF) or just check headers (Zip/Doc)
+        processor = FileProcessor(asset)
+        result_data = processor.process()
+        
+        # 4. Success: Finalize
+        # Updates DB with 'thumbnail' (if PDF) or just file metadata
+        _finalize_asset(asset_id, result_data)
+
+    # --- ERROR HANDLING ---
+
+    except ValueError as e:
+        # SECURITY ERROR (e.g., .exe disguised as .pdf)
+        # The processor has already deleted the file from S3.
+        # Fail fast, do not retry.
+        _handle_failure(asset_id, e)
+
+    except SoftTimeLimitExceeded:
+        # TIMEOUT ERROR
+        _handle_failure(asset_id, Exception("Processing timed out"))
+
+    except (BotoCoreError, ClientError, ConnectionError) as e:
+        # NETWORK ERROR
+        # S3 is slow/down. Retry with backoff.
+        try:
+             raise self.retry(exc=e, countdown=10 * (2 ** self.request.retries))
+        except Exception:
+             _handle_failure(asset_id, e)
+
+    except Exception as e:
+        # LOGIC ERROR
+        # e.g., 'pdf2image' crashes on a weird PDF
+        _handle_failure(asset_id, e)
 
 # ----------------------------------------------------------------------------
 # FAILURE HANDLER
