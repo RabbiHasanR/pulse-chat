@@ -949,30 +949,17 @@
 import json
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
-from utils.redis_client import redis_client
+from utils.redis_client import redis_client, RedisKeys
 
 class UserSocketConsumer(AsyncWebsocketConsumer):
-    ONLINE_USERS_SET = "online_users"
-
-    # --- 1. REDIS KEY HELPERS (O(1) Access) ---
-
+    
+    # --- 1. HELPERS ---
     @staticmethod
     def _room(user_id: int) -> str:
-        """Channel Group Name used for routing messages to specific users."""
+        """Channel Group Name used for routing messages."""
         return f"user_{user_id}"
 
-    @staticmethod
-    def _active_tabs_key(user_id: int) -> str:
-        """Set of Tab IDs. Tracks if user is Globally Online (Count > 0)."""
-        return f"user:{user_id}:online_tabs"
-
-    @staticmethod
-    def _viewing_key(user_id: int, target_id: int) -> str:
-        """Set of Tab IDs. Tracks if User is actively looking at Target's chat."""
-        return f"user:{user_id}:viewing:{target_id}"
-
     # --- 2. CONNECTION LIFECYCLE ---
-
     async def connect(self):
         self.user = self.scope.get("user")
         query_params = parse_qs(self.scope.get("query_string", b"").decode())
@@ -984,8 +971,7 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
             await self.close(code=4002)
             return
 
-        # B. Tab ID Strategy (Required for Multi-Tab Sync)
-        # Client MUST send a unique ID (e.g. ?tab_id=mobile:uuid)
+        # B. Tab ID Strategy (Multi-Tab Sync)
         client_provided_id = query_params.get("tab_id", [None])[0]
         if not client_provided_id:
             await self.close(code=4003) 
@@ -1001,40 +987,39 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
 
         # E. Online Status Logic
-        # Add this specific tab to the active set
-        await redis_client.sadd(self._active_tabs_key(self.user.id), self.tab_id)
+        active_tabs_key = RedisKeys.active_tabs(self.user.id)
+        await redis_client.sadd(active_tabs_key, self.tab_id)
         
-        # Check total active tabs. If 1, User just transitioned Offline -> Online.
-        count = await redis_client.scard(self._active_tabs_key(self.user.id))
+        # Check total active tabs. If 1, User just went Online.
+        count = await redis_client.scard(active_tabs_key)
         if count == 1:
-            await redis_client.sadd(self.ONLINE_USERS_SET, self.user.id)
-            # Fanout "Online" status to everyone watching me
+            await redis_client.sadd(RedisKeys.ONLINE_USERS, self.user.id)
+            # Notify everyone watching me
             await self._notify_my_audience("online")
 
     async def disconnect(self, close_code):
         if not getattr(self, "user", None): return
 
-        # A. Leave Channel Group
+        # A. Leave Group
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
         # B. Cleanup "Viewing" Status (Read Receipts)
         if self.current_viewing_id:
-            view_key = self._viewing_key(self.user.id, self.current_viewing_id)
+            view_key = RedisKeys.viewing(self.user.id, self.current_viewing_id)
             await redis_client.srem(view_key, self.tab_id)
 
         # C. Cleanup Online Status
-        tabs_key = self._active_tabs_key(self.user.id)
-        await redis_client.srem(tabs_key, self.tab_id)
+        active_tabs_key = RedisKeys.active_tabs(self.user.id)
+        await redis_client.srem(active_tabs_key, self.tab_id)
         
         # If NO tabs are left, mark User as Globally Offline
-        remaining = await redis_client.scard(tabs_key)
+        remaining = await redis_client.scard(active_tabs_key)
         if remaining == 0:
-            await redis_client.srem(self.ONLINE_USERS_SET, self.user.id)
+            await redis_client.srem(RedisKeys.ONLINE_USERS, self.user.id)
             await self._notify_my_audience("offline")
-            await redis_client.delete(tabs_key)
+            await redis_client.delete(active_tabs_key)
 
-    # --- 3. INBOUND HANDLERS (Client Actions) ---
-
+    # --- 3. INBOUND HANDLERS ---
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
@@ -1051,53 +1036,44 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
             await self._handle_chat_close(data)
         elif event_type == "chat_typing":
             await self._handle_chat_typing(data)
-        
-        # Note: 'subscribe_presence' is REMOVED. 
-        # The API (ChatList/Scroll) handles subscription now.
 
     # --- 4. FEATURE HANDLERS ---
-
     async def _handle_ping(self):
-        """
-        Heartbeat handler.
-        Returns 'pong' only to the specific socket that sent 'ping'.
-        """
+        """Heartbeat: Pong back to keep connection alive."""
         await self._send_json({"type": "pong"})
 
     async def _handle_chat_open(self, data: dict):
         """
-        Client says: 'I am looking at User X'.
-        We track this in Redis so the API knows to mark messages as 'Seen'.
+        Client: 'I am looking at User X'.
+        Server: Tracks this for Instant Read Receipts.
         """
         target_id = data.get("receiver_id")
         if not target_id: return
 
-        # Switch context safely (if user clicked a different chat in same tab)
+        # Cleanup old view if switching
         if self.current_viewing_id and self.current_viewing_id != target_id:
-            old_key = self._viewing_key(self.user.id, self.current_viewing_id)
+            old_key = RedisKeys.viewing(self.user.id, self.current_viewing_id)
             await redis_client.srem(old_key, self.tab_id)
 
         self.current_viewing_id = target_id
-        new_key = self._viewing_key(self.user.id, target_id)
+        new_key = RedisKeys.viewing(self.user.id, target_id)
         
-        # Add to set. (Even if 5 tabs look at User X, Set count is 5)
         await redis_client.sadd(new_key, self.tab_id)
-        # Safety expiry (24h) in case of zombie sessions
-        await redis_client.expire(new_key, 86400) 
+        await redis_client.expire(new_key, 86400) # 24h Safety
 
     async def _handle_chat_close(self, data: dict):
-        """Client says: 'I closed the chat window'."""
+        """Client: 'I closed the chat window'."""
         target_id = data.get("receiver_id")
         if not target_id: return
 
-        key = self._viewing_key(self.user.id, target_id)
+        key = RedisKeys.viewing(self.user.id, target_id)
         await redis_client.srem(key, self.tab_id)
         
         if self.current_viewing_id == target_id:
             self.current_viewing_id = None
 
     async def _handle_chat_typing(self, data: dict):
-        """Forward typing events directly (Pass-through)."""
+        """Pass-through typing event."""
         receiver_id = data.get("receiver_id")
         if receiver_id:
             await self._group_send(
@@ -1109,14 +1085,13 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
                 }
             )
 
-    # --- 5. NOTIFICATION LOGIC (Audience Fanout) ---
-
+    # --- 5. NOTIFICATION LOGIC ---
     async def _notify_my_audience(self, status: str):
         """
-        Notifies everyone who subscribed to me via the API.
-        This list is populated by 'ChatListView' and 'CreateChatView'.
+        Notifies everyone who subscribed to me (via API).
+        Uses the 'presence_audience' set.
         """
-        my_audience_key = f"user:{self.user.id}:presence_audience"
+        my_audience_key = RedisKeys.presence_audience(self.user.id)
         audience_ids = await redis_client.smembers(my_audience_key)
         
         if not audience_ids: return
@@ -1133,7 +1108,6 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
             await self._group_send(self._room(uid), "forward_event", payload)
 
     # --- 6. OUTBOUND HELPERS ---
-
     async def forward_event(self, event):
         """Generic funnel for API -> Client events."""
         await self._send_json(event["payload"])
