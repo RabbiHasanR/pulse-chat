@@ -1,3 +1,5 @@
+# Version 1
+
 # import json
 # from urllib.parse import parse_qs
 # from channels.generic.websocket import AsyncWebsocketConsumer
@@ -438,499 +440,706 @@
 
 
 
+# Version 2
+
+# import json
+# from typing import Iterable, List, Set, Tuple
+# from urllib.parse import parse_qs
+
+# from asgiref.sync import sync_to_async
+# from channels.generic.websocket import AsyncWebsocketConsumer
+# from django.db.models import Q
+# from django.utils import timezone
+# from django.core.exceptions import ValidationError
+
+# from users.models import ChatUser, Contact
+# from chats.models import ChatMessage
+# from utils.redis_client import redis_client
+
+
+# class UserSocketConsumer(AsyncWebsocketConsumer):
+#     ONLINE_USERS_SET = "online_users"
+
+#     @staticmethod
+#     def _active_tabs_key(user_id: int) -> str:
+#         return f"user:{user_id}:active_tabs"
+
+#     @staticmethod
+#     def _active_thread_key(user_id: int, token: str, tab_id: str) -> str:
+#         return f"user:{user_id}:access:{token}:tab:{tab_id}:active_thread"
+
+#     @staticmethod
+#     def _room(user_id: int) -> str:
+#         return f"user_{user_id}"
+
+
+#     async def _send_json(self, payload: dict) -> None:
+#         await self.send(text_data=json.dumps(payload))
+
+#     async def _group_send(self, room: str, type_: str, payload: dict) -> None:
+#         await self.channel_layer.group_send(room, {"type": type_, "payload": payload})
+
+#     async def _presence_fanout(self, user_id: int, status: str) -> None:
+#         payload = {
+#             "type": "presence_update",
+#             "user_id": user_id,
+#             "status": status,
+#         }
+#         await self._group_send(self._room(user_id), "forward_event", payload)
+#         for uid in await self._fetch_related_user_ids(user_id):
+#             await self._group_send(self._room(uid), "forward_event", payload)
+
+#     async def _fetch_related_user_ids(self, user_id: int) -> Set[int]:
+#         contact_ids: List[int] = await sync_to_async(list)(
+#             Contact.objects.filter(contact_user_id=user_id)
+#             .values_list("owner_id", flat=True)
+#             .distinct()
+#         )
+#         message_pairs: List[Tuple[int, int]] = await sync_to_async(list)(
+#             ChatMessage.objects.filter(Q(sender_id=user_id) | Q(receiver_id=user_id))
+#             .values_list("sender_id", "receiver_id")
+#             .distinct()
+#         )
+#         related_ids: Set[int] = set(contact_ids) | {uid for a, b in message_pairs for uid in (a, b)}
+#         related_ids.discard(user_id)
+#         return related_ids
+
+#     async def _set_tab_presence(self, user_id: int, tab_key: str) -> int:
+#         await redis_client.sadd(self._active_tabs_key(user_id), tab_key)
+#         return await redis_client.scard(self._active_tabs_key(user_id))
+
+#     async def _clear_tab_presence(self, user_id: int, tab_key: str) -> int:
+#         await redis_client.srem(self._active_tabs_key(user_id), tab_key)
+#         return await redis_client.scard(self._active_tabs_key(user_id))
+
+#     async def _mark_online(self, user_id: int) -> None:
+#         await redis_client.sadd(self.ONLINE_USERS_SET, user_id)
+#         await self._presence_fanout(user_id, "online")
+
+#     async def _mark_offline(self, user_id: int) -> None:
+#         await redis_client.srem(self.ONLINE_USERS_SET, user_id)
+#         await self._presence_fanout(user_id, "offline")
+
+#     async def _auth_error_and_close(self) -> None:
+#         await self.accept()
+#         await self._send_json(
+#             {
+#                 "type": "auth_error",
+#                 "success": False,
+#                 "message": "Authentication failed",
+#                 "errors": {"token": ["Missing or invalid"], "tab_id": ["Missing or defaulted to mobile"]},
+#             }
+#         )
+#         await self.close(code=4002)
+
+
+#     # Required fields per inbound event
+#     SCHEMAS = {
+#     "chat_message": {"message": str, "receiver_id": int},
+#     "message_edit": {"message_id": int, "new_content": str},
+#     "message_delete": {"message_id": int},
+#     "chat_typing": {"receiver_id": int},
+#     "chat_open": {"receiver_id": int},
+#     "chat_close": {"receiver_id": int},
+#     }
+
+
+#     async def _bad_request(self, message: str, errors: dict | None = None) -> None:
+#         await self._send_json({
+#         "type": "error",
+#         "success": False,
+#         "message": message,
+#         **({"errors": errors} if errors else {}),
+#         })
+
+
+#     def _validate_event(self, data: dict, event_type: str) -> dict:
+#         errors: dict = {}
+#         if (data or {}).get("type") != event_type:
+#             errors["type"] = f"must be '{event_type}'"
+
+
+#         schema = self.SCHEMAS.get(event_type, {})
+#         cleaned: dict = {}
+#         for field, typ in schema.items():
+#             value = (data or {}).get(field)
+#             if value is None:
+#                 errors[field] = "missing"
+#                 continue
+#             if typ is int:
+#                 try:
+#                     cleaned[field] = int(value)
+#                 except (TypeError, ValueError):
+#                     errors[field] = "must be int"
+#             elif typ is str:
+#                 s = str(value).strip()
+#                 if s == "":
+#                     errors[field] = "cannot be empty"
+#                 else:
+#                     cleaned[field] = s
+#             else:
+#                 cleaned[field] = value
+
+
+#         if errors:
+#             raise ValidationError(errors)
+#         return cleaned
+    
+    
+#     def _extract_validation_errors(self, e: ValidationError):
+#         # Prefer dict → list → string
+#         return getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
+
+#     async def connect(self):
+#         self.user = self.scope.get("user")
+#         query_params = parse_qs(self.scope.get("query_string", b"").decode())
+#         self.token = (query_params.get("token", [None])[0]) or None
+#         self.tab_id = (query_params.get("tab_id", [None])[0]) or "mobile"  # mobile fallback
+
+#         if not self.user or self.user.is_anonymous:
+#             return await self._auth_error_and_close()
+
+#         self.room_group_name = self._room(self.user.id)
+#         await self.accept()
+#         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+
+#         tab_key = f"{self.token}:{self.tab_id}"
+#         tab_count = await self._set_tab_presence(self.user.id, tab_key)
+
+#         if tab_count == 1:
+#             await self._mark_online(self.user.id)
+
+#     async def disconnect(self, close_code):
+#         if not getattr(self, "user", None) or self.user.is_anonymous:
+#             return
+
+#         if hasattr(self, "room_group_name"):
+#             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+#         tab_key = f"{getattr(self, 'token', None)}:{getattr(self, 'tab_id', 'mobile')}"
+#         tab_count = await self._clear_tab_presence(self.user.id, tab_key)
+
+#         if getattr(self, "token", None) and getattr(self, "tab_id", None):
+#             await redis_client.delete(self._active_thread_key(self.user.id, self.token, self.tab_id))
+
+#         if tab_count == 0:
+#             await self._mark_offline(self.user.id)
+
+
+#     async def receive(self, text_data):
+#         try:
+#             data = json.loads(text_data)
+#         except json.JSONDecodeError:
+#             return await self._send_json({"type": "error", "success": False, "message": "Invalid JSON"})
+
+#         event_type = data.get("type")
+#         handlers = {
+#             "chat_message": self._handle_chat_message,
+#             "message_edit": self._handle_message_edit,
+#             "message_delete": self._handle_message_delete,
+#             "chat_typing": self._handle_chat_typing,
+#             "chat_open": self._handle_chat_open,
+#             "chat_close": self._handle_chat_close,
+#             "heartbeat": self._handle_heartbeat,
+#         }
+#         handler = handlers.get(event_type)
+#         if handler:
+#             await handler(data)
+#         else:
+#             await self._send_json({"type": "error", "success": False, "message": "Unknown event type"})
+
+
+#     async def _handle_chat_message(self, data: dict) -> None:
+#         try:
+#             v = self._validate_event(data, "chat_message")
+#         except ValidationError as e:
+#             return await self._bad_request("Invalid payload", self._extract_validation_errors(e))
+
+
+#         message = v["message"]
+#         receiver_id = v["receiver_id"]
+
+#         if not message or not receiver_id:
+#             return await self._send_json({"type": "error", "success": False, "message": "Invalid payload"})
+
+#         try:
+#             receiver = await ChatUser.objects.aget(id=receiver_id)
+#         except ChatUser.DoesNotExist:
+#             return await self._send_json({"type": "error", "success": False, "message": "Receiver not found"})
+
+#         chat_message = await ChatMessage.objects.acreate(
+#             sender=self.user,
+#             receiver=receiver,
+#             content=message,
+#             message_type="text",
+#             status="sent",
+#             created_at=timezone.now(),
+#         )
+
+#         payload = self._build_chat_message_payload(chat_message)
+#         await self._group_send(self._room(receiver.id), "forward_event", payload)
+#         await self._group_send(self._room(self.user.id), "forward_event", payload)
+
+#         if await redis_client.sismember(self.ONLINE_USERS_SET, receiver.id):
+#             if await self._is_user_viewing_me(receiver_id=receiver.id):
+#                 await ChatMessage.objects.filter(id=chat_message.id).aupdate(status="seen")
+#                 await self._notify_single_status(
+#                     message_id=chat_message.id,
+#                     receiver_id=receiver.id,
+#                     sender_id=self.user.id,
+#                     status="seen",
+#                 )
+#             else:
+#                 await self._send_unread_summary(to_user_id=receiver.id, from_user_id=self.user.id)
+
+#     async def _handle_message_edit(self, data: dict) -> None:
+#         try:
+#             v = self._validate_event(data, "message_edit")
+#         except ValidationError as e:
+#             return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
+
+
+#         message_id = v["message_id"]
+#         new_content = v["new_content"]
+
+#         if not message_id or new_content is None:
+#             return await self._send_json({"type": "error", "success": False, "message": "Missing message_id or new_content"})
+
+#         message = await ChatMessage.objects.filter(id=message_id, sender=self.user).afirst()
+#         if not message:
+#             return await self._send_json({"type": "error", "success": False, "message": "Message not found or unauthorized"})
+
+#         message.content = new_content
+#         await sync_to_async(message.save)()
+
+#         payload = self._build_message_edit_payload(message)
+#         await self._group_send(self._room(message.receiver_id), "forward_event", payload)
+#         await self._group_send(self._room(self.user.id), "forward_event", payload)
+
+#     async def _handle_message_delete(self, data: dict) -> None:
+#         try:
+#             v = self._validate_event(data, "message_delete")
+#         except ValidationError as e:
+#             return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
+
+
+#         message_id = v["message_id"]
+
+#         if not message_id:
+#             return await self._send_json({"type": "error", "success": False, "message": "Missing message_id"})
+
+#         message = await ChatMessage.objects.filter(id=message_id, sender=self.user).afirst()
+#         if not message:
+#             return await self._send_json({"type": "error", "success": False, "message": "Message not found or unauthorized"})
+
+#         message.is_deleted = True
+#         await sync_to_async(message.save)()
+
+#         payload = self._build_message_delete_payload(message)
+#         await self._group_send(self._room(message.receiver_id), "forward_event", payload)
+#         await self._group_send(self._room(self.user.id), "forward_event", payload)
+
+#     async def _handle_chat_typing(self, data: dict) -> None:
+#         try:
+#             v = self._validate_event(data, "chat_typing")
+#         except ValidationError as e:
+#             return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
+
+
+#         receiver_id = v["receiver_id"]
+
+#         if not receiver_id:
+#             return
+#         await self._group_send(
+#             self._room(receiver_id),
+#             "forward_event",
+#             {
+#                 "type": "chat_typing",
+#                 "success": True,
+#                 "data": {
+#                     "sender_id": self.user.id,
+#                     "receiver_id": receiver_id,
+#                     "timestamp": str(timezone.now()),
+#                 },
+#             },
+#         )
+
+#     async def _handle_chat_open(self, data: dict) -> None:
+#         try:
+#             v = self._validate_event(data, "chat_open")
+#         except ValidationError as e:
+#             return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
+
+
+#         receiver_id = v["receiver_id"]
+#         token = getattr(self, "token", None)
+#         tab_id = getattr(self, "tab_id", None) or "mobile"
+#         if not (receiver_id and token and tab_id):
+#             return
+
+#         redis_key = self._active_thread_key(self.user.id, token, tab_id)
+#         await redis_client.set(redis_key, str(receiver_id), ex=30)
+
+#         await ChatMessage.objects.filter(
+#             sender_id=receiver_id,
+#             receiver_id=self.user.id,
+#             status__in=["sent", "delivered"],
+#         ).aupdate(status="seen")
+
+#         seen_messages = await sync_to_async(list)(
+#             ChatMessage.objects.filter(
+#                 sender_id=receiver_id,
+#                 receiver_id=self.user.id,
+#                 status="seen",
+#             ).values("id", "sender_id")
+#         )
+
+#         await self._group_send(
+#             self._room(receiver_id),
+#             "forward_event",
+#             {
+#                 "type": "message_status_batch",
+#                 "success": True,
+#                 "message": "Messages marked as seen",
+#                 "data": [
+#                     {
+#                         "message_id": m["id"],
+#                         "receiver_id": receiver_id,
+#                         "sender_id": m["sender_id"],
+#                         "status": "seen",
+#                     }
+#                     for m in seen_messages
+#                 ],
+#             },
+#         )
+
+#         await self._send_json({"type": "chat_open_ack", "success": True, "message": "Chat opened"})
+
+#     async def _handle_chat_close(self, data: dict) -> None:
+#         try:
+#             v = self._validate_event(data, "chat_close")
+#         except ValidationError as e:
+#             return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
+
+
+#         receiver_id = v["receiver_id"]
+#         token = getattr(self, "token", None)
+#         tab_id = getattr(self, "tab_id", None) or "mobile"
+#         if not (token and tab_id):
+#             return
+
+#         redis_key = self._active_thread_key(self.user.id, token, tab_id)
+#         current = await redis_client.get(redis_key)
+#         if current and current.decode() == str(receiver_id):
+#             await redis_client.delete(redis_key)
+
+#         await self._send_json({"type": "chat_close_ack", "success": True, "message": "Chat closed"})
+
+#     async def _handle_heartbeat(self, _data: dict) -> None:
+#         token = getattr(self, "token", None)
+#         tab_id = getattr(self, "tab_id", None) or "mobile"
+#         if token and tab_id:
+#             await redis_client.expire(self._active_thread_key(self.user.id, token, tab_id), 30)
+
+
+#     def _build_chat_message_payload(self, chat_message: ChatMessage) -> dict:
+#         return {
+#             "type": "chat_message",
+#             "success": True,
+#             "message": "Message sent",
+#             "data": {
+#                 "message_id": chat_message.id,
+#                 "content": chat_message.content,
+#                 "sender_id": chat_message.sender_id,
+#                 "receiver_id": chat_message.receiver_id,
+#                 "timestamp": str(chat_message.created_at),
+#                 "status": chat_message.status,
+#             },
+#         }
+
+#     def _build_message_edit_payload(self, message: ChatMessage) -> dict:
+#         return {
+#             "type": "message_edit",
+#             "success": True,
+#             "message": "Message updated",
+#             "data": {
+#                 "sender_id": message.sender_id,
+#                 "receiver_id": message.receiver_id,
+#                 "message_id": message.id,
+#                 "new_content": message.content,
+#                 "timestamp": str(message.updated_at),
+#             },
+#         }
+
+#     def _build_message_delete_payload(self, message: ChatMessage) -> dict:
+#         return {
+#             "type": "message_delete",
+#             "success": True,
+#             "message": "Message deleted",
+#             "data": {
+#                 "sender_id": message.sender_id,
+#                 "receiver_id": message.receiver_id,
+#                 "message_id": message.id,
+#                 "timestamp": str(message.updated_at),
+#             },
+#         }
+
+#     async def _is_user_viewing_me(self, receiver_id: int) -> bool:
+#         pattern = f"user:{receiver_id}:access:*:tab:*:active_thread"
+#         keys = await redis_client.keys(pattern)
+#         if not keys:
+#             return False
+#         values = await redis_client.mget(*keys)
+#         decoded = [v.decode() for v in values if v]
+#         return str(self.user.id) in decoded
+
+#     async def _notify_single_status(self, message_id: int, receiver_id: int, sender_id: int, status: str) -> None:
+#         payload = {
+#             "type": "message_status",
+#             "success": True,
+#             "message": f"Message {status}",
+#             "data": {
+#                 "message_id": message_id,
+#                 "status": status,
+#                 "receiver_id": receiver_id,
+#                 "sender_id": sender_id,
+#                 "timestamp": str(timezone.now()),
+#             },
+#         }
+#         await self._group_send(self._room(sender_id), "forward_event", payload)
+
+#     async def _send_unread_summary(self, to_user_id: int, from_user_id: int) -> None:
+#         unseen_count = await ChatMessage.objects.filter(
+#             sender_id=from_user_id, receiver_id=to_user_id, status="sent"
+#         ).acount()
+
+#         last_message = await ChatMessage.objects.filter(
+#             sender_id=from_user_id, receiver_id=to_user_id
+#         ).order_by("-created_at").afirst()
+
+#         summary_payload = {
+#             "type": "chat_summary",
+#             "success": True,
+#             "message": "Unread message summary",
+#             "data": {
+#                 "sender_id": from_user_id,
+#                 "receiver_id": to_user_id,
+#                 "unread_count": unseen_count,
+#                 "last_message": {
+#                     "message_id": last_message.id if last_message else None,
+#                     "content": last_message.content if last_message else None,
+#                     "timestamp": str(last_message.created_at) if last_message else None,
+#                 },
+#             },
+#         }
+#         await self._group_send(self._room(to_user_id), "forward_event", summary_payload)
+        
+#     async def forward_event(self, event):
+#         await self._send_json(event["payload"])
+
+
+
+
+
+
+# Version 3
+
 
 
 import json
-from typing import Iterable, List, Set, Tuple
 from urllib.parse import parse_qs
-
-from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
-from django.db.models import Q
-from django.utils import timezone
-from django.core.exceptions import ValidationError
-
-from users.models import ChatUser, Contact
-from chats.models import ChatMessage
 from utils.redis_client import redis_client
-
 
 class UserSocketConsumer(AsyncWebsocketConsumer):
     ONLINE_USERS_SET = "online_users"
 
-    @staticmethod
-    def _active_tabs_key(user_id: int) -> str:
-        return f"user:{user_id}:active_tabs"
-
-    @staticmethod
-    def _active_thread_key(user_id: int, token: str, tab_id: str) -> str:
-        return f"user:{user_id}:access:{token}:tab:{tab_id}:active_thread"
+    # --- 1. REDIS KEY HELPERS (O(1) Access) ---
 
     @staticmethod
     def _room(user_id: int) -> str:
+        """Channel Group Name used for routing messages to specific users."""
         return f"user_{user_id}"
 
+    @staticmethod
+    def _active_tabs_key(user_id: int) -> str:
+        """Set of Tab IDs. Tracks if user is Globally Online (Count > 0)."""
+        return f"user:{user_id}:online_tabs"
 
-    async def _send_json(self, payload: dict) -> None:
-        await self.send(text_data=json.dumps(payload))
+    @staticmethod
+    def _viewing_key(user_id: int, target_id: int) -> str:
+        """Set of Tab IDs. Tracks if User is actively looking at Target's chat."""
+        return f"user:{user_id}:viewing:{target_id}"
 
-    async def _group_send(self, room: str, type_: str, payload: dict) -> None:
-        await self.channel_layer.group_send(room, {"type": type_, "payload": payload})
-
-    async def _presence_fanout(self, user_id: int, status: str) -> None:
-        payload = {
-            "type": "presence_update",
-            "user_id": user_id,
-            "status": status,
-        }
-        await self._group_send(self._room(user_id), "forward_event", payload)
-        for uid in await self._fetch_related_user_ids(user_id):
-            await self._group_send(self._room(uid), "forward_event", payload)
-
-    async def _fetch_related_user_ids(self, user_id: int) -> Set[int]:
-        contact_ids: List[int] = await sync_to_async(list)(
-            Contact.objects.filter(contact_user_id=user_id)
-            .values_list("owner_id", flat=True)
-            .distinct()
-        )
-        message_pairs: List[Tuple[int, int]] = await sync_to_async(list)(
-            ChatMessage.objects.filter(Q(sender_id=user_id) | Q(receiver_id=user_id))
-            .values_list("sender_id", "receiver_id")
-            .distinct()
-        )
-        related_ids: Set[int] = set(contact_ids) | {uid for a, b in message_pairs for uid in (a, b)}
-        related_ids.discard(user_id)
-        return related_ids
-
-    async def _set_tab_presence(self, user_id: int, tab_key: str) -> int:
-        await redis_client.sadd(self._active_tabs_key(user_id), tab_key)
-        return await redis_client.scard(self._active_tabs_key(user_id))
-
-    async def _clear_tab_presence(self, user_id: int, tab_key: str) -> int:
-        await redis_client.srem(self._active_tabs_key(user_id), tab_key)
-        return await redis_client.scard(self._active_tabs_key(user_id))
-
-    async def _mark_online(self, user_id: int) -> None:
-        await redis_client.sadd(self.ONLINE_USERS_SET, user_id)
-        await self._presence_fanout(user_id, "online")
-
-    async def _mark_offline(self, user_id: int) -> None:
-        await redis_client.srem(self.ONLINE_USERS_SET, user_id)
-        await self._presence_fanout(user_id, "offline")
-
-    async def _auth_error_and_close(self) -> None:
-        await self.accept()
-        await self._send_json(
-            {
-                "type": "auth_error",
-                "success": False,
-                "message": "Authentication failed",
-                "errors": {"token": ["Missing or invalid"], "tab_id": ["Missing or defaulted to mobile"]},
-            }
-        )
-        await self.close(code=4002)
-
-
-    # Required fields per inbound event
-    SCHEMAS = {
-    "chat_message": {"message": str, "receiver_id": int},
-    "message_edit": {"message_id": int, "new_content": str},
-    "message_delete": {"message_id": int},
-    "chat_typing": {"receiver_id": int},
-    "chat_open": {"receiver_id": int},
-    "chat_close": {"receiver_id": int},
-    }
-
-
-    async def _bad_request(self, message: str, errors: dict | None = None) -> None:
-        await self._send_json({
-        "type": "error",
-        "success": False,
-        "message": message,
-        **({"errors": errors} if errors else {}),
-        })
-
-
-    def _validate_event(self, data: dict, event_type: str) -> dict:
-        errors: dict = {}
-        if (data or {}).get("type") != event_type:
-            errors["type"] = f"must be '{event_type}'"
-
-
-        schema = self.SCHEMAS.get(event_type, {})
-        cleaned: dict = {}
-        for field, typ in schema.items():
-            value = (data or {}).get(field)
-            if value is None:
-                errors[field] = "missing"
-                continue
-            if typ is int:
-                try:
-                    cleaned[field] = int(value)
-                except (TypeError, ValueError):
-                    errors[field] = "must be int"
-            elif typ is str:
-                s = str(value).strip()
-                if s == "":
-                    errors[field] = "cannot be empty"
-                else:
-                    cleaned[field] = s
-            else:
-                cleaned[field] = value
-
-
-        if errors:
-            raise ValidationError(errors)
-        return cleaned
-    
-    
-    def _extract_validation_errors(self, e: ValidationError):
-        # Prefer dict → list → string
-        return getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
+    # --- 2. CONNECTION LIFECYCLE ---
 
     async def connect(self):
         self.user = self.scope.get("user")
         query_params = parse_qs(self.scope.get("query_string", b"").decode())
-        self.token = (query_params.get("token", [None])[0]) or None
-        self.tab_id = (query_params.get("tab_id", [None])[0]) or "mobile"  # mobile fallback
-
+        
+        # A. Auth Check
         if not self.user or self.user.is_anonymous:
-            return await self._auth_error_and_close()
+            await self.accept()
+            await self._send_json({"type": "auth_error", "message": "Unauthorized"})
+            await self.close(code=4002)
+            return
 
+        # B. Tab ID Strategy (Required for Multi-Tab Sync)
+        # Client MUST send a unique ID (e.g. ?tab_id=mobile:uuid)
+        client_provided_id = query_params.get("tab_id", [None])[0]
+        if not client_provided_id:
+            await self.close(code=4003) 
+            return
+        self.tab_id = client_provided_id
+        
+        # C. Local State (Memory)
+        self.current_viewing_id = None
+
+        # D. Join Channel Group
         self.room_group_name = self._room(self.user.id)
         await self.accept()
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
 
-        tab_key = f"{self.token}:{self.tab_id}"
-        tab_count = await self._set_tab_presence(self.user.id, tab_key)
-
-        if tab_count == 1:
-            await self._mark_online(self.user.id)
+        # E. Online Status Logic
+        # Add this specific tab to the active set
+        await redis_client.sadd(self._active_tabs_key(self.user.id), self.tab_id)
+        
+        # Check total active tabs. If 1, User just transitioned Offline -> Online.
+        count = await redis_client.scard(self._active_tabs_key(self.user.id))
+        if count == 1:
+            await redis_client.sadd(self.ONLINE_USERS_SET, self.user.id)
+            # Fanout "Online" status to everyone watching me
+            await self._notify_my_audience("online")
 
     async def disconnect(self, close_code):
-        if not getattr(self, "user", None) or self.user.is_anonymous:
-            return
+        if not getattr(self, "user", None): return
 
-        if hasattr(self, "room_group_name"):
-            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        # A. Leave Channel Group
+        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
-        tab_key = f"{getattr(self, 'token', None)}:{getattr(self, 'tab_id', 'mobile')}"
-        tab_count = await self._clear_tab_presence(self.user.id, tab_key)
+        # B. Cleanup "Viewing" Status (Read Receipts)
+        if self.current_viewing_id:
+            view_key = self._viewing_key(self.user.id, self.current_viewing_id)
+            await redis_client.srem(view_key, self.tab_id)
 
-        if getattr(self, "token", None) and getattr(self, "tab_id", None):
-            await redis_client.delete(self._active_thread_key(self.user.id, self.token, self.tab_id))
+        # C. Cleanup Online Status
+        tabs_key = self._active_tabs_key(self.user.id)
+        await redis_client.srem(tabs_key, self.tab_id)
+        
+        # If NO tabs are left, mark User as Globally Offline
+        remaining = await redis_client.scard(tabs_key)
+        if remaining == 0:
+            await redis_client.srem(self.ONLINE_USERS_SET, self.user.id)
+            await self._notify_my_audience("offline")
+            await redis_client.delete(tabs_key)
 
-        if tab_count == 0:
-            await self._mark_offline(self.user.id)
-
+    # --- 3. INBOUND HANDLERS (Client Actions) ---
 
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
         except json.JSONDecodeError:
-            return await self._send_json({"type": "error", "success": False, "message": "Invalid JSON"})
+            return
 
         event_type = data.get("type")
-        handlers = {
-            "chat_message": self._handle_chat_message,
-            "message_edit": self._handle_message_edit,
-            "message_delete": self._handle_message_delete,
-            "chat_typing": self._handle_chat_typing,
-            "chat_open": self._handle_chat_open,
-            "chat_close": self._handle_chat_close,
-            "heartbeat": self._handle_heartbeat,
-        }
-        handler = handlers.get(event_type)
-        if handler:
-            await handler(data)
-        else:
-            await self._send_json({"type": "error", "success": False, "message": "Unknown event type"})
 
-
-    async def _handle_chat_message(self, data: dict) -> None:
-        try:
-            v = self._validate_event(data, "chat_message")
-        except ValidationError as e:
-            return await self._bad_request("Invalid payload", self._extract_validation_errors(e))
-
-
-        message = v["message"]
-        receiver_id = v["receiver_id"]
-
-        if not message or not receiver_id:
-            return await self._send_json({"type": "error", "success": False, "message": "Invalid payload"})
-
-        try:
-            receiver = await ChatUser.objects.aget(id=receiver_id)
-        except ChatUser.DoesNotExist:
-            return await self._send_json({"type": "error", "success": False, "message": "Receiver not found"})
-
-        chat_message = await ChatMessage.objects.acreate(
-            sender=self.user,
-            receiver=receiver,
-            content=message,
-            message_type="text",
-            status="sent",
-            created_at=timezone.now(),
-        )
-
-        payload = self._build_chat_message_payload(chat_message)
-        await self._group_send(self._room(receiver.id), "forward_event", payload)
-        await self._group_send(self._room(self.user.id), "forward_event", payload)
-
-        if await redis_client.sismember(self.ONLINE_USERS_SET, receiver.id):
-            if await self._is_user_viewing_me(receiver_id=receiver.id):
-                await ChatMessage.objects.filter(id=chat_message.id).aupdate(status="seen")
-                await self._notify_single_status(
-                    message_id=chat_message.id,
-                    receiver_id=receiver.id,
-                    sender_id=self.user.id,
-                    status="seen",
-                )
-            else:
-                await self._send_unread_summary(to_user_id=receiver.id, from_user_id=self.user.id)
-
-    async def _handle_message_edit(self, data: dict) -> None:
-        try:
-            v = self._validate_event(data, "message_edit")
-        except ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
-
-
-        message_id = v["message_id"]
-        new_content = v["new_content"]
-
-        if not message_id or new_content is None:
-            return await self._send_json({"type": "error", "success": False, "message": "Missing message_id or new_content"})
-
-        message = await ChatMessage.objects.filter(id=message_id, sender=self.user).afirst()
-        if not message:
-            return await self._send_json({"type": "error", "success": False, "message": "Message not found or unauthorized"})
-
-        message.content = new_content
-        await sync_to_async(message.save)()
-
-        payload = self._build_message_edit_payload(message)
-        await self._group_send(self._room(message.receiver_id), "forward_event", payload)
-        await self._group_send(self._room(self.user.id), "forward_event", payload)
-
-    async def _handle_message_delete(self, data: dict) -> None:
-        try:
-            v = self._validate_event(data, "message_delete")
-        except ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
-
-
-        message_id = v["message_id"]
-
-        if not message_id:
-            return await self._send_json({"type": "error", "success": False, "message": "Missing message_id"})
-
-        message = await ChatMessage.objects.filter(id=message_id, sender=self.user).afirst()
-        if not message:
-            return await self._send_json({"type": "error", "success": False, "message": "Message not found or unauthorized"})
-
-        message.is_deleted = True
-        await sync_to_async(message.save)()
-
-        payload = self._build_message_delete_payload(message)
-        await self._group_send(self._room(message.receiver_id), "forward_event", payload)
-        await self._group_send(self._room(self.user.id), "forward_event", payload)
-
-    async def _handle_chat_typing(self, data: dict) -> None:
-        try:
-            v = self._validate_event(data, "chat_typing")
-        except ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
-
-
-        receiver_id = v["receiver_id"]
-
-        if not receiver_id:
-            return
-        await self._group_send(
-            self._room(receiver_id),
-            "forward_event",
-            {
-                "type": "chat_typing",
-                "success": True,
-                "data": {
-                    "sender_id": self.user.id,
-                    "receiver_id": receiver_id,
-                    "timestamp": str(timezone.now()),
-                },
-            },
-        )
-
-    async def _handle_chat_open(self, data: dict) -> None:
-        try:
-            v = self._validate_event(data, "chat_open")
-        except ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
-
-
-        receiver_id = v["receiver_id"]
-        token = getattr(self, "token", None)
-        tab_id = getattr(self, "tab_id", None) or "mobile"
-        if not (receiver_id and token and tab_id):
-            return
-
-        redis_key = self._active_thread_key(self.user.id, token, tab_id)
-        await redis_client.set(redis_key, str(receiver_id), ex=30)
-
-        await ChatMessage.objects.filter(
-            sender_id=receiver_id,
-            receiver_id=self.user.id,
-            status__in=["sent", "delivered"],
-        ).aupdate(status="seen")
-
-        seen_messages = await sync_to_async(list)(
-            ChatMessage.objects.filter(
-                sender_id=receiver_id,
-                receiver_id=self.user.id,
-                status="seen",
-            ).values("id", "sender_id")
-        )
-
-        await self._group_send(
-            self._room(receiver_id),
-            "forward_event",
-            {
-                "type": "message_status_batch",
-                "success": True,
-                "message": "Messages marked as seen",
-                "data": [
-                    {
-                        "message_id": m["id"],
-                        "receiver_id": receiver_id,
-                        "sender_id": m["sender_id"],
-                        "status": "seen",
-                    }
-                    for m in seen_messages
-                ],
-            },
-        )
-
-        await self._send_json({"type": "chat_open_ack", "success": True, "message": "Chat opened"})
-
-    async def _handle_chat_close(self, data: dict) -> None:
-        try:
-            v = self._validate_event(data, "chat_close")
-        except ValidationError as e:
-            return await self._bad_request("Missing or invalid fields", self._extract_validation_errors(e))
-
-
-        receiver_id = v["receiver_id"]
-        token = getattr(self, "token", None)
-        tab_id = getattr(self, "tab_id", None) or "mobile"
-        if not (token and tab_id):
-            return
-
-        redis_key = self._active_thread_key(self.user.id, token, tab_id)
-        current = await redis_client.get(redis_key)
-        if current and current.decode() == str(receiver_id):
-            await redis_client.delete(redis_key)
-
-        await self._send_json({"type": "chat_close_ack", "success": True, "message": "Chat closed"})
-
-    async def _handle_heartbeat(self, _data: dict) -> None:
-        token = getattr(self, "token", None)
-        tab_id = getattr(self, "tab_id", None) or "mobile"
-        if token and tab_id:
-            await redis_client.expire(self._active_thread_key(self.user.id, token, tab_id), 30)
-
-
-    def _build_chat_message_payload(self, chat_message: ChatMessage) -> dict:
-        return {
-            "type": "chat_message",
-            "success": True,
-            "message": "Message sent",
-            "data": {
-                "message_id": chat_message.id,
-                "content": chat_message.content,
-                "sender_id": chat_message.sender_id,
-                "receiver_id": chat_message.receiver_id,
-                "timestamp": str(chat_message.created_at),
-                "status": chat_message.status,
-            },
-        }
-
-    def _build_message_edit_payload(self, message: ChatMessage) -> dict:
-        return {
-            "type": "message_edit",
-            "success": True,
-            "message": "Message updated",
-            "data": {
-                "sender_id": message.sender_id,
-                "receiver_id": message.receiver_id,
-                "message_id": message.id,
-                "new_content": message.content,
-                "timestamp": str(message.updated_at),
-            },
-        }
-
-    def _build_message_delete_payload(self, message: ChatMessage) -> dict:
-        return {
-            "type": "message_delete",
-            "success": True,
-            "message": "Message deleted",
-            "data": {
-                "sender_id": message.sender_id,
-                "receiver_id": message.receiver_id,
-                "message_id": message.id,
-                "timestamp": str(message.updated_at),
-            },
-        }
-
-    async def _is_user_viewing_me(self, receiver_id: int) -> bool:
-        pattern = f"user:{receiver_id}:access:*:tab:*:active_thread"
-        keys = await redis_client.keys(pattern)
-        if not keys:
-            return False
-        values = await redis_client.mget(*keys)
-        decoded = [v.decode() for v in values if v]
-        return str(self.user.id) in decoded
-
-    async def _notify_single_status(self, message_id: int, receiver_id: int, sender_id: int, status: str) -> None:
-        payload = {
-            "type": "message_status",
-            "success": True,
-            "message": f"Message {status}",
-            "data": {
-                "message_id": message_id,
-                "status": status,
-                "receiver_id": receiver_id,
-                "sender_id": sender_id,
-                "timestamp": str(timezone.now()),
-            },
-        }
-        await self._group_send(self._room(sender_id), "forward_event", payload)
-
-    async def _send_unread_summary(self, to_user_id: int, from_user_id: int) -> None:
-        unseen_count = await ChatMessage.objects.filter(
-            sender_id=from_user_id, receiver_id=to_user_id, status="sent"
-        ).acount()
-
-        last_message = await ChatMessage.objects.filter(
-            sender_id=from_user_id, receiver_id=to_user_id
-        ).order_by("-created_at").afirst()
-
-        summary_payload = {
-            "type": "chat_summary",
-            "success": True,
-            "message": "Unread message summary",
-            "data": {
-                "sender_id": from_user_id,
-                "receiver_id": to_user_id,
-                "unread_count": unseen_count,
-                "last_message": {
-                    "message_id": last_message.id if last_message else None,
-                    "content": last_message.content if last_message else None,
-                    "timestamp": str(last_message.created_at) if last_message else None,
-                },
-            },
-        }
-        await self._group_send(self._room(to_user_id), "forward_event", summary_payload)
+        if event_type == "ping":
+            await self._handle_ping()
+        elif event_type == "chat_open":
+            await self._handle_chat_open(data)
+        elif event_type == "chat_close":
+            await self._handle_chat_close(data)
+        elif event_type == "chat_typing":
+            await self._handle_chat_typing(data)
         
+        # Note: 'subscribe_presence' is REMOVED. 
+        # The API (ChatList/Scroll) handles subscription now.
+
+    # --- 4. FEATURE HANDLERS ---
+
+    async def _handle_ping(self):
+        """
+        Heartbeat handler.
+        Returns 'pong' only to the specific socket that sent 'ping'.
+        """
+        await self._send_json({"type": "pong"})
+
+    async def _handle_chat_open(self, data: dict):
+        """
+        Client says: 'I am looking at User X'.
+        We track this in Redis so the API knows to mark messages as 'Seen'.
+        """
+        target_id = data.get("receiver_id")
+        if not target_id: return
+
+        # Switch context safely (if user clicked a different chat in same tab)
+        if self.current_viewing_id and self.current_viewing_id != target_id:
+            old_key = self._viewing_key(self.user.id, self.current_viewing_id)
+            await redis_client.srem(old_key, self.tab_id)
+
+        self.current_viewing_id = target_id
+        new_key = self._viewing_key(self.user.id, target_id)
+        
+        # Add to set. (Even if 5 tabs look at User X, Set count is 5)
+        await redis_client.sadd(new_key, self.tab_id)
+        # Safety expiry (24h) in case of zombie sessions
+        await redis_client.expire(new_key, 86400) 
+
+    async def _handle_chat_close(self, data: dict):
+        """Client says: 'I closed the chat window'."""
+        target_id = data.get("receiver_id")
+        if not target_id: return
+
+        key = self._viewing_key(self.user.id, target_id)
+        await redis_client.srem(key, self.tab_id)
+        
+        if self.current_viewing_id == target_id:
+            self.current_viewing_id = None
+
+    async def _handle_chat_typing(self, data: dict):
+        """Forward typing events directly (Pass-through)."""
+        receiver_id = data.get("receiver_id")
+        if receiver_id:
+            await self._group_send(
+                self._room(receiver_id), 
+                "forward_event", 
+                {
+                    "type": "chat_typing", 
+                    "data": {"sender_id": self.user.id, "receiver_id": receiver_id}
+                }
+            )
+
+    # --- 5. NOTIFICATION LOGIC (Audience Fanout) ---
+
+    async def _notify_my_audience(self, status: str):
+        """
+        Notifies everyone who subscribed to me via the API.
+        This list is populated by 'ChatListView' and 'CreateChatView'.
+        """
+        my_audience_key = f"user:{self.user.id}:presence_audience"
+        audience_ids = await redis_client.smembers(my_audience_key)
+        
+        if not audience_ids: return
+
+        payload = {
+            "type": "presence_update",
+            "data": {
+                "user_id": self.user.id,
+                "status": status
+            }
+        }
+        
+        for uid in audience_ids:
+            await self._group_send(self._room(uid), "forward_event", payload)
+
+    # --- 6. OUTBOUND HELPERS ---
+
     async def forward_event(self, event):
+        """Generic funnel for API -> Client events."""
         await self._send_json(event["payload"])
+
+    async def _send_json(self, payload: dict):
+        await self.send(text_data=json.dumps(payload))
+
+    async def _group_send(self, room: str, type_: str, payload: dict):
+        await self.channel_layer.group_send(room, {"type": type_, "payload": payload})
