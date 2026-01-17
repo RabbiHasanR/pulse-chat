@@ -2,6 +2,9 @@ import math
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
+from django.db.models import Q, Case, When, F
+
+from asgiref.sync import async_to_sync
 
 from utils.response import success_response, error_response
 from utils.aws import s3, AWS_BUCKET, new_object_key
@@ -12,7 +15,8 @@ from .serializers import (
     MAX_BATCH_COUNT,
     CompleteUploadIn,
     DEFAULT_EXPIRES_DIRECT,
-    DEFAULT_EXPIRES_PART
+    DEFAULT_EXPIRES_PART,
+    ChatListSerializer
 )
 from background_worker.chats.tasks import (
     notify_message_event,
@@ -21,6 +25,13 @@ from background_worker.chats.tasks import (
     process_audio_task,
     process_file_task
 )
+from django.contrib.auth import get_user_model
+from .models import Conversation
+from .pagination import ChatListCursorPagination
+
+from utils.redis_client import ChatRedisService
+
+User = get_user_model()
 
 class PrepareUpload(APIView):
     permission_classes = [IsAuthenticated]
@@ -286,3 +297,71 @@ class CompleteUpload(APIView):
         # ... etc
 
         return success_response(message="Upload completed", status=200)
+    
+    
+    
+    
+    
+    
+    
+
+class ChatListView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = ChatListCursorPagination
+
+    def get(self, request):
+        user_id = request.user.id
+
+        # --- 1. OPTIMIZED QUERY ---
+        # We query the 'Conversation' container directly. 
+        # The 'last_message' and 'unread_counts' are already stored here (Denormalized),
+        # so we don't need any slow Subqueries or Joins on the Message table.
+        queryset = Conversation.objects.filter(
+            Q(participant_1=user_id) | Q(participant_2=user_id)
+        ).annotate(
+            # Calculate who the 'other person' is for every row
+            partner_id=Case(
+                When(participant_1=user_id, then=F('participant_2')),
+                default=F('participant_1')
+            )
+        ).order_by('-updated_at')
+
+        # --- 2. PAGINATION ---
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+
+        if page is not None:
+            # Extract IDs of the 20 users currently visible on screen
+            partner_ids = [getattr(obj, 'partner_id') for obj in page]
+
+            # --- 3. BATCH FETCH USERS (Solves N+1 DB) ---
+            # Fetch all 20 partner objects in exactly 1 Database Query
+            user_objects = User.objects.filter(id__in=partner_ids)
+            # Create a lookup map: { 101: UserObject, 102: UserObject }
+            user_map = {u.id: u for u in user_objects}
+
+            # --- 4. REDIS PIPELINE (Solves N+1 Network) ---
+            # Subscribe to updates AND get current online status in 1 Request
+            online_status_map = {}
+            if partner_ids:
+                online_status_map = async_to_sync(ChatRedisService.subscribe_and_get_presences)(
+                    observer_id=user_id,
+                    target_ids=partner_ids
+                )
+
+            # --- 5. SERIALIZE ---
+            # We pass the maps into the context so the Serializer doesn't have to query DB/Redis
+            serializer = ChatListSerializer(
+                page, 
+                many=True, 
+                context={
+                    'request': request, # Needed for unread_count logic
+                    'online_status_map': online_status_map,
+                    'user_map': user_map
+                }
+            )
+            
+            return paginator.get_paginated_response(serializer.data)
+
+        # Handle empty state
+        return paginator.get_paginated_response([])
