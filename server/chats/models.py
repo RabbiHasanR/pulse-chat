@@ -123,6 +123,7 @@ class ChatMessage(models.Model):
         DELIVERED = "delivered", "Delivered"
         SEEN      = "seen",      "Seen"
 
+    # --- RELATIONS ---
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="sent_messages", on_delete=models.CASCADE
     )
@@ -130,12 +131,37 @@ class ChatMessage(models.Model):
         settings.AUTH_USER_MODEL, related_name="received_messages", on_delete=models.CASCADE
     )
 
+    # --- CONTENT ---
     message_type = models.CharField(max_length=10, choices=MsgType.choices, default=MsgType.TEXT)
     content = models.TextField(blank=True, null=True)
-
-    # Removed media_asset field — now reverse via media_assets.all()
+    
+    # render_cache: Stores calculated layout data (e.g., aspect ratios) for UI optimization
     render_cache = models.JSONField(default=dict, blank=True)
 
+    # --- 1. REPLY FEATURE (Snapshot Strategy) ---
+    # The hard link to the parent message (for "Jump to Message")
+    reply_to = models.ForeignKey(
+        'self', 
+        on_delete=models.SET_NULL, # If parent deleted, keep the reply but break the link
+        null=True, 
+        blank=True, 
+        related_name='replies'
+    )
+    # The SNAPSHOT: Stores "Alice: Hello..." so we can render the UI 
+    # without querying the parent message table (High Performance)
+    # Structure: { "id": 123, "sender_name": "Alice", "preview": "Hello...", "media_type": "image" }
+    reply_metadata = models.JSONField(null=True, blank=True)
+
+    # --- 2. FORWARD FEATURE ---
+    is_forwarded = models.BooleanField(default=False)
+    # Optional: Display "Forwarded from Bob" without linking to Bob's ID (Privacy)
+    forward_source_name = models.CharField(max_length=255, null=True, blank=True)
+
+    # --- 3. EDIT FEATURE ---
+    is_edited = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(null=True, blank=True)
+
+    # --- METADATA ---
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
     is_deleted = models.BooleanField(default=False)
 
@@ -144,6 +170,9 @@ class ChatMessage(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["sender", "receiver", "-created_at"]), # Fast history lookup
+        ]
 
     def __str__(self):
         return f"{self.sender_id}->{self.receiver_id} | {self.message_type} | {self.status}"
