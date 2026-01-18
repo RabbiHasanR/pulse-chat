@@ -16,7 +16,8 @@ from .serializers import (
     CompleteUploadIn,
     DEFAULT_EXPIRES_DIRECT,
     DEFAULT_EXPIRES_PART,
-    ChatListSerializer
+    ChatListSerializer,
+    ChatMessageSerializer
 )
 from background_worker.chats.tasks import (
     notify_message_event,
@@ -26,8 +27,9 @@ from background_worker.chats.tasks import (
     process_file_task
 )
 from django.contrib.auth import get_user_model
-from .models import Conversation
-from .pagination import ChatListCursorPagination
+from .models import Conversation, ChatMessage
+from .pagination import ChatListCursorPagination, MessageCursorPagination
+from .services import ChatService
 
 from utils.redis_client import ChatRedisService
 
@@ -365,3 +367,56 @@ class ChatListView(APIView):
 
         # Handle empty state
         return paginator.get_paginated_response([])
+    
+    
+
+
+
+
+
+
+
+class ChatMessageListView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = MessageCursorPagination
+
+    def get(self, request, partner_id):
+        user_id = request.user.id
+        
+        # 1. Graceful Lookup: Find the container or return Empty List
+        # We sort the IDs to ensure we find the correct unique pair
+        p1, p2 = sorted([user_id, partner_id])
+        
+        try:
+            conversation = Conversation.objects.get(
+                participant_1_id=p1, 
+                participant_2_id=p2
+            )
+        except Conversation.DoesNotExist:
+            # "Cold Start" Case: No chat exists yet. Return empty list.
+            return self.pagination_class().get_paginated_response([])
+
+        # 2. Mark as Read (Service Layer)
+        # This handles the DB update + WebSocket notification
+        ChatService.mark_messages_as_read(request.user, conversation, partner_id)
+
+        # 3. Optimized Query
+        queryset = ChatMessage.objects.filter(
+            conversation=conversation
+        ).select_related(
+            'reply_to'
+        ).prefetch_related(
+            'media_assets' # Batch fetch images
+        ).order_by('-created_at') # Newest first
+
+        # 4. Paginate & Serialize
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        
+        serializer = ChatMessageSerializer(
+            page, 
+            many=True, 
+            context={'request': request}
+        )
+        
+        return paginator.get_paginated_response(serializer.data)

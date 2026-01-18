@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Conversation
+from .models import Conversation, ChatMessage, MediaAsset
 import math
 
 User = get_user_model()
@@ -173,3 +173,60 @@ class ChatListSerializer(serializers.ModelSerializer):
             return "🖼️ Album"
             
         return ""
+    
+    
+    
+
+
+
+class MediaAssetSerializer(serializers.ModelSerializer):
+    """
+    Serializes attachments. 
+    Uses the @property fields 'url' and 'thumbnail_url' from the model.
+    """
+    url = serializers.CharField(read_only=True)
+    thumbnail_url = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = MediaAsset
+        fields = [
+            'id', 'kind', 'url', 'thumbnail_url', 
+            'width', 'height', 'duration_seconds', 
+            'file_name', 'file_size'
+        ]
+
+# --- 2. CHAT MESSAGE SERIALIZER ---
+class ChatMessageSerializer(serializers.ModelSerializer):
+    media_assets = MediaAssetSerializer(many=True, read_only=True)
+    is_me = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ChatMessage
+        fields = [
+            'id', 
+            'sender',          # Returns ID (Integer)
+            'content', 
+            'message_type',
+            'status', 
+            'created_at', 
+            'is_edited', 
+            'is_forwarded', 
+            'forward_source_name',
+            
+            # Reply Data
+            'reply_to',        # ID of parent
+            'reply_metadata',  # Snapshot { "sender": "Alice", "preview": "..." }
+            
+            # Attachments
+            'asset_count',     # Quick check for UI
+            'media_assets',    # Full objects with URLs
+            
+            # Helper
+            'is_me'
+        ]
+
+    def get_is_me(self, obj):
+        request = self.context.get('request')
+        if request:
+            return obj.sender_id == request.user.id
+        return False

@@ -114,3 +114,10 @@ This is the killer feature of HLS.
 | **Cost Saving** | **Segmented Download:** Users download only what they watch. | If a user watches 10s of a 1-hour video, you only pay for one small `.ts` file, not the whole 1GB. |
 | **Performance** | **CDN Caching:** You set `max-age=1 Year` on `.ts` files. | Once a video goes viral, 99% of requests are served by the cache, reducing load on your server. |
 
+
+
+
+
+
+
+ 

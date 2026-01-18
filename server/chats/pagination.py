@@ -19,3 +19,20 @@ class ChatListCursorPagination(CursorPagination):
             },
             status=200
         )
+        
+
+
+class MessageCursorPagination(CursorPagination):
+    page_size = 30
+    ordering = '-created_at' # Newest messages first
+    
+    def get_paginated_response(self, data):
+        return success_response(
+            message="Messages retrieved successfully",
+            data={
+                "messages": data,
+                "next": self.get_next_link(),
+                "previous": self.get_previous_link()
+            },
+            status=200
+        )
