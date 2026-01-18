@@ -382,41 +382,44 @@ class ChatMessageListView(APIView):
 
     def get(self, request, partner_id):
         user_id = request.user.id
-        
-        # 1. Graceful Lookup: Find the container or return Empty List
-        # We sort the IDs to ensure we find the correct unique pair
         p1, p2 = sorted([user_id, partner_id])
         
         try:
-            conversation = Conversation.objects.get(
-                participant_1_id=p1, 
-                participant_2_id=p2
-            )
+            conversation = Conversation.objects.get(participant_1_id=p1, participant_2_id=p2)
         except Conversation.DoesNotExist:
-            # "Cold Start" Case: No chat exists yet. Return empty list.
             return self.pagination_class().get_paginated_response([])
 
-        # 2. Mark as Read (Service Layer)
-        # This handles the DB update + WebSocket notification
-        ChatService.mark_messages_as_read(request.user, conversation, partner_id)
-
-        # 3. Optimized Query
+        # --- 1. FETCH MESSAGES FIRST (Query 1) ---
         queryset = ChatMessage.objects.filter(
             conversation=conversation
-        ).select_related(
-            'reply_to'
-        ).prefetch_related(
-            'media_assets' # Batch fetch images
-        ).order_by('-created_at') # Newest first
+        ).select_related('reply_to').prefetch_related('media_assets').order_by('-created_at')
 
-        # 4. Paginate & Serialize
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(queryset, request, view=self)
+
+        # --- 2. EXTRACT LATEST ID ---
+        latest_msg_id = None
         
-        serializer = ChatMessageSerializer(
-            page, 
-            many=True, 
-            context={'request': request}
+        # We only use the page data if we are on the FIRST page (No 'cursor' param).
+        # If user is scrolling deep history (?cursor=...), the page[0] is NOT the latest message,
+        # so we pass None and let the Service do the lookup query safely.
+        is_first_page = request.query_params.get('cursor') is None
+        
+        if is_first_page and page:
+            # The first item in the list is the absolute newest message
+            # We also check if it was sent by the partner (not me)
+            top_msg = page[0]
+            if top_msg.sender_id == partner_id:
+                latest_msg_id = top_msg.id
+
+        # --- 3. MARK READ (Query 2 - Reusing ID) ---
+        # If latest_msg_id is passed, the Service SKIPS the lookup query.
+        ChatService.mark_messages_as_read(
+            request.user, 
+            conversation, 
+            partner_id, 
+            latest_message_id=latest_msg_id
         )
         
+        serializer = ChatMessageSerializer(page, many=True, context={'request': request})
         return paginator.get_paginated_response(serializer.data)

@@ -15,9 +15,10 @@ class ChatService:
     @transaction.atomic
     def send_message(sender, receiver_id, content, msg_type='text', reply_to_id=None):
         """
-        1. Creates Message Row
-        2. Updates Conversation (Denormalization)
-        3. Sends Real-Time Socket Event to Receiver
+        1. Determines Status (Seen vs Delivered vs Sent) via Redis.
+        2. Creates Message Row.
+        3. Updates Conversation (Denormalization).
+        4. Sends Real-Time Socket Event to Receiver.
         """
         # A. Get/Create Conversation (Ensure sorted IDs for uniqueness)
         p1, p2 = sorted([sender.id, receiver_id])
@@ -27,7 +28,7 @@ class ChatService:
             defaults={'unread_counts': {str(p1): 0, str(p2): 0}}
         )
 
-        # B. Handle Reply Logic (Optional)
+        # B. Handle Reply Logic
         reply_to = None
         reply_metadata = None
         if reply_to_id:
@@ -44,7 +45,29 @@ class ChatService:
             except ChatMessage.DoesNotExist:
                 pass
 
-        # C. Create Message
+        # --- C. DETERMINE INITIAL STATUS (The Logic You Requested) ---
+        
+        # 1. Check Redis: Is the receiver actively looking at THIS chat?
+        # Key: "user:{receiver_id}:viewing:{sender_id}"
+        viewing_key = RedisKeys.viewing(receiver_id, sender.id)
+        # We use async_to_sync because we are inside a sync DB transaction
+        is_viewing = async_to_sync(redis_client.scard)(viewing_key) > 0
+
+        # 2. Check Redis: Is the receiver Online at all?
+        # Key: "online_users" set
+        is_online = False
+        if not is_viewing:
+            is_online = async_to_sync(redis_client.sismember)(RedisKeys.ONLINE_USERS, receiver_id)
+
+        # 3. Set Status
+        if is_viewing:
+            initial_status = ChatMessage.Status.SEEN
+        elif is_online:
+            initial_status = ChatMessage.Status.DELIVERED
+        else:
+            initial_status = ChatMessage.Status.SENT
+
+        # --- D. CREATE MESSAGE ---
         msg = ChatMessage.objects.create(
             conversation=conversation,
             sender=sender,
@@ -52,27 +75,30 @@ class ChatService:
             content=content,
             message_type=msg_type,
             reply_to=reply_to,
-            reply_metadata=reply_metadata
+            reply_metadata=reply_metadata,
+            status=initial_status # <--- Applied here
         )
 
-        # D. Update Conversation Denormalization (Unread + Last Msg)
+        # --- E. UPDATE CONVERSATION (Denormalization) ---
         current_counts = conversation.unread_counts or {}
         receiver_str = str(receiver_id)
-        current_counts[receiver_str] = current_counts.get(receiver_str, 0) + 1
 
+        # CRITICAL: Only increment unread count if they are NOT viewing
+        if not is_viewing:
+            current_counts[receiver_str] = current_counts.get(receiver_str, 0) + 1
+        
         conversation.last_message_content = content
         conversation.last_message_type = msg_type
         conversation.last_message_time = msg.created_at
         conversation.unread_counts = current_counts
         conversation.save()
 
-        # E. WebSocket Notification: "New Message"
-        # We define a custom 'type' that the frontend listener handles
+        # --- F. WEBSOCKET NOTIFICATION ---
         channel_layer = get_channel_layer()
         serialized_data = ChatMessageSerializer(msg).data
         
         event = {
-            "type": "forward_event", # Funnels through Consumer's generic handler
+            "type": "forward_event", 
             "payload": {
                 "type": "chat_message_new",
                 "data": serialized_data
@@ -84,55 +110,63 @@ class ChatService:
         )
 
         return msg
-
+    
     @staticmethod
     @transaction.atomic
-    def mark_messages_as_read(reader, conversation, partner_id):
+    def mark_messages_as_read(reader, conversation, partner_id, latest_message_id=None):
         """
-        1. Resets unread count in Conversation.
-        2. Bulk updates Message status to 'seen'.
-        3. Sends 'Read Receipt' (Blue Ticks) to the SENDER.
+        OPTIMIZED:
+        - If 'latest_message_id' is passed, we SKIP the lookup query.
+        - Otherwise, we find it ourselves (fallback for scrolling/history).
         """
         reader_str = str(reader.id)
         counts = conversation.unread_counts or {}
 
-        # 1. OPTIMIZATION: Only proceed if there are actually unread items
+        # 1. OPTIMIZATION: If Badge is 0, DO NOTHING.
+        # This makes 99% of page refreshes cost 0 DB Writes.
         if counts.get(reader_str, 0) == 0:
             return
 
-        # 2. Reset Badge Count
+        # 2. Reset Badge
         counts[reader_str] = 0
         conversation.unread_counts = counts
         conversation.save(update_fields=['unread_counts'])
 
-        # 3. Find specific messages to update
-        # We need the IDs to tell the frontend "These specific bubbles turned blue"
-        unread_msgs = ChatMessage.objects.filter(
-            conversation=conversation,
-            sender_id=partner_id,
-            status__in=[ChatMessage.Status.SENT, ChatMessage.Status.DELIVERED]
-        )
-        
-        # Grab IDs *before* updating (values_list is fast)
-        read_message_ids = list(unread_msgs.values_list('id', flat=True))
-        
-        if not read_message_ids:
+        # 3. Determine the 'Cursor' (Last Read ID)
+        cursor_id = latest_message_id
+
+        if not cursor_id:
+            # Fallback: Query the DB if we weren't given the ID
+            last_msg_obj = ChatMessage.objects.filter(
+                conversation=conversation,
+                sender_id=partner_id
+            ).order_by('-created_at').first()
+            
+            if last_msg_obj:
+                cursor_id = last_msg_obj.id
+
+        if not cursor_id:
             return
 
-        # 4. Bulk DB Update
-        unread_msgs.update(status=ChatMessage.Status.SEEN)
+        # 4. Bulk Update (The Range Update)
+        # "Mark everything OLDER than or EQUAL to cursor as SEEN"
+        ChatMessage.objects.filter(
+            conversation=conversation,
+            sender_id=partner_id,
+            id__lte=cursor_id, # <--- Safety Check
+            status__in=[ChatMessage.Status.SENT, ChatMessage.Status.DELIVERED]
+        ).update(status=ChatMessage.Status.SEEN)
 
-        # 5. WebSocket Notification: "Read Receipt"
-        # Notify the PARTNER (The one who sent the messages)
+        # 5. WebSocket Notification (O(1) Payload)
         channel_layer = get_channel_layer()
         event = {
             "type": "forward_event",
             "payload": {
-                "type": "chat_read_receipt", # Frontend event listener name
+                "type": "chat_read_receipt",
                 "data": {
                     "conversation_id": conversation.id,
                     "reader_id": reader.id,
-                    "message_ids": read_message_ids # List of [101, 102, 103]
+                    "last_read_id": cursor_id
                 }
             }
         }
