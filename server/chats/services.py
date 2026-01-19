@@ -5,6 +5,8 @@ from asgiref.sync import async_to_sync
 
 from .models import Conversation, ChatMessage
 from .serializers import ChatMessageSerializer
+from utils.redis_client import RedisKeys, redis_client
+
 
 class ChatService:
     @staticmethod

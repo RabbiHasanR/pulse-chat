@@ -296,7 +296,8 @@ class CompleteUpload(APIView):
             process_image_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.AUDIO:
             process_audio_task.delay(asset.id)
-        # ... etc
+        elif asset.kind == MediaAsset.kind.FILE:
+            process_file_task.delay(asset.id)
 
         return success_response(message="Upload completed", status=200)
     
