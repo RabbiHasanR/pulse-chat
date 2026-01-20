@@ -76,6 +76,18 @@ class SignBatchInSerializer(serializers.Serializer):
     start_part = serializers.IntegerField(required=False, default=1, min_value=1)
     batch_count = serializers.IntegerField(required=False, default=100, min_value=1, max_value=MAX_BATCH_COUNT)
     
+    
+class ForwardMessageInSerializer(serializers.Serializer):
+    message_id = serializers.IntegerField()
+    # Limit to 20 users at once for synchronous safety
+    receiver_ids = serializers.ListField(
+        child=serializers.IntegerField(), 
+        min_length=1, 
+        max_length=20 
+    )
+    # Optional: User can add a comment to the forward
+    text = serializers.CharField(required=False, allow_blank=True)
+    
 
 class PrepareUploadIn(serializers.Serializer):
     # --- MODE A: NEW ALBUM CREATION ---

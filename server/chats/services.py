@@ -272,6 +272,101 @@ class ChatService:
                 }
             }
     
+    
+    @staticmethod
+    def forward_message_batch(sender, original_message_id, receiver_ids, new_text=None):
+        """
+        Forwards a message to multiple users efficiently.
+        - Clones MediaAsset rows (pointing to same S3 objects) = Zero Storage Cost.
+        - Preserves 'Forwarded From' metadata.
+        - Handles 'Unread' counts, Redis Status, and Socket events for each receiver.
+        """
+        # 1. Fetch Original Message (Efficiently with assets and sender)
+        try:
+            original_msg = ChatMessage.objects.select_related('sender').prefetch_related('media_assets').get(id=original_message_id)
+        except ChatMessage.DoesNotExist:
+            return 0
+
+        # 2. Determine Forward Metadata
+        # If the message we are forwarding was ITSELF a forward, keep the original source.
+        # Otherwise, the source is the person who wrote the message we are forwarding.
+        source_name = original_msg.forward_source_name or original_msg.sender.full_name
+        
+        # 3. Determine Content (Caption Logic)
+        # If new_text is provided (e.g., a new caption for a photo), use it.
+        # Otherwise, preserve the original content/caption.
+        final_content = new_text if new_text is not None else original_msg.content
+        msg_type = original_msg.message_type
+        
+        # 4. Process Each Receiver
+        # We wrap the loop in a transaction to ensure partial failures don't leave bad states
+        count = 0
+        with transaction.atomic():
+            for receiver_id in receiver_ids:
+                if receiver_id == sender.id: 
+                    continue # Skip self-forwarding
+
+                # A. Setup Conversation
+                p1, p2 = sorted([sender.id, receiver_id])
+                conversation, _ = Conversation.objects.select_for_update().get_or_create(
+                    participant_1_id=p1, participant_2_id=p2,
+                    defaults={'unread_counts': {str(p1): 0, str(p2): 0}}
+                )
+
+                # B. Check Status (Reuse the Redis Logic!)
+                status, is_viewing = ChatService._determine_initial_status(sender.id, receiver_id)
+
+                # C. Create The New Message
+                new_msg = ChatMessage.objects.create(
+                    conversation=conversation,
+                    sender=sender,
+                    receiver_id=receiver_id,
+                    content=final_content,
+                    message_type=msg_type,
+                    status=status,
+                    # Forwarding Metadata
+                    is_forwarded=True,
+                    forward_source_name=source_name,
+                    # Optimization: Copy the asset count so lists don't need to join tables
+                    asset_count=original_msg.asset_count
+                )
+
+                # D. Clone Assets (The "Smart Copy")
+                # We duplicate the DB rows but point to the EXISTING S3 Keys.
+                # This makes forwarding a 1GB video instant and free.
+                if original_msg.asset_count > 0:
+                    new_assets = []
+                    for old_asset in original_msg.media_assets.all():
+                        new_assets.append(MediaAsset(
+                            message=new_msg,
+                            bucket=old_asset.bucket,
+                            object_key=old_asset.object_key, # <--- REUSE KEY
+                            kind=old_asset.kind,
+                            content_type=old_asset.content_type,
+                            file_name=old_asset.file_name,
+                            file_size=old_asset.file_size,
+                            width=old_asset.width,
+                            height=old_asset.height,
+                            duration_seconds=old_asset.duration_seconds,
+                            variants=old_asset.variants, # Reuse thumbnails/variants
+                            processing_status="done" # It is already processed!
+                        ))
+                    
+                    # Bulk Create is significantly faster than .save() in a loop
+                    if new_assets:
+                        MediaAsset.objects.bulk_create(new_assets)
+
+                # E. Update Conversation & Notify
+                ChatService._update_conversation(
+                    conversation, receiver_id, final_content, msg_type, new_msg.created_at, is_viewing
+                )
+                ChatService._notify_receiver(receiver_id, new_msg)
+                
+                count += 1
+
+        return count
+    
+    
     @staticmethod
     @transaction.atomic
     def mark_messages_as_read(reader, conversation, partner_id, latest_message_id=None):

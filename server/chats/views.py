@@ -14,7 +14,8 @@ from .serializers import (
     ChatListSerializer,
     ChatMessageSerializer,
     SendMessageInSerializer,
-    SignBatchInSerializer
+    SignBatchInSerializer,
+    ForwardMessageInSerializer
 )
 from background_worker.chats.tasks import (
     notify_message_event,
@@ -454,6 +455,28 @@ class SignBatchView(APIView):
                     "items": items
                 }
             },
+            status=200
+        )
+
+
+class ForwardMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        ser = ForwardMessageInSerializer(data=request.data)
+        if not ser.is_valid():
+            return error_response(errors=ser.errors, status=400)
+        
+        d = ser.validated_data
+        count = ChatService.forward_message_batch(
+            sender=request.user,
+            original_message_id=d['message_id'],
+            receiver_ids=d['receiver_ids'],
+            new_text=d.get('text')
+        )
+
+        return success_response(
+            message=f"Forwarded to {count} chats",
             status=200
         )
 
