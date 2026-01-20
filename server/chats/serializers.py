@@ -5,14 +5,12 @@ import math
 
 User = get_user_model()
 
-MIN_PART_SIZE = 5 * 1024 * 1024        # 5MB
-MAX_PART_SIZE = 512 * 1024 * 1024      # 512MB (policy cap)
-MAX_PARTS     = 10_000                 # S3 limit
-DIRECT_THRESHOLD = 5 * 1024 * 1024     # 5MB
+# ... Constants (MIN_PART_SIZE etc.) remain the same ...
+MIN_PART_SIZE = 5 * 1024 * 1024
+MAX_PART_SIZE = 512 * 1024 * 1024
+MAX_PARTS     = 10_000
+DIRECT_THRESHOLD = 5 * 1024 * 1024
 MAX_BATCH_COUNT  = 500
-
-DEFAULT_EXPIRES_DIRECT = 300
-DEFAULT_EXPIRES_PART = 3600
 
 class AttachmentItem(serializers.Serializer):
     """
@@ -21,40 +19,63 @@ class AttachmentItem(serializers.Serializer):
     file_name = serializers.CharField()
     file_size = serializers.IntegerField(min_value=1)
     content_type = serializers.CharField()
-    # "kind" helps frontend distinguish video vs image in the grid immediately
     kind = serializers.ChoiceField(choices=['image', 'video', 'audio', 'file']) 
 
-    # Multipart fields (optional, only for big files)
+    # Multipart fields
     client_part_size = serializers.IntegerField(required=False, min_value=MIN_PART_SIZE, max_value=MAX_PART_SIZE)
     client_num_parts = serializers.IntegerField(required=False, min_value=1)
+    batch_count = serializers.IntegerField(required=False, min_value=1, max_value=MAX_BATCH_COUNT)
 
     def validate(self, d):
         file_size = d["file_size"]
-
-        # 1. Direct Upload Logic (Small files)
         if file_size <= DIRECT_THRESHOLD:
             return d
 
-        # 2. Multipart Upload Logic (Large files)
-        # Must include chunking details
         for k in ("client_part_size", "client_num_parts"):
             if k not in d:
                 raise serializers.ValidationError({k: "Required for files > 5MB"})
 
         cps = d["client_part_size"]
         cnp = d["client_num_parts"]
-
         expected = math.ceil(file_size / cps)
+        
         if cnp != expected:
-            raise serializers.ValidationError({
-                "client_num_parts": f"Mismatch. Expected {expected} parts."
-            })
+            raise serializers.ValidationError({"client_num_parts": f"Mismatch. Expected {expected} parts."})
         if cnp > MAX_PARTS:
-            raise serializers.ValidationError({
-                "client_num_parts": "Too many parts. Increase part size."
-            })
+            raise serializers.ValidationError({"client_num_parts": "Too many parts."})
         return d
 
+# --- UNIFIED SEND MESSAGE SERIALIZER ---
+class SendMessageInSerializer(serializers.Serializer):
+    receiver_id = serializers.IntegerField(min_value=1)
+    text = serializers.CharField(required=False, allow_blank=True)
+    reply_to_id = serializers.IntegerField(required=False, allow_null=True)
+    
+    # List of files (Optional)
+    attachments = serializers.ListField(
+        child=AttachmentItem(), 
+        required=False, 
+        allow_empty=True
+    )
+
+    def validate(self, attrs):
+        has_text = bool(attrs.get('text') and attrs['text'].strip())
+        has_files = bool(attrs.get('attachments') and len(attrs['attachments']) > 0)
+
+        if not has_text and not has_files:
+            raise serializers.ValidationError("Message must have either text or attachments.")
+        return attrs
+
+
+class SignBatchInSerializer(serializers.Serializer):
+    """
+    Used to get the next set of Presigned URLs for a large multipart upload.
+    """
+    upload_id = serializers.CharField(required=True)
+    object_key = serializers.CharField(required=True)
+    start_part = serializers.IntegerField(required=False, default=1, min_value=1)
+    batch_count = serializers.IntegerField(required=False, default=100, min_value=1, max_value=MAX_BATCH_COUNT)
+    
 
 class PrepareUploadIn(serializers.Serializer):
     # --- MODE A: NEW ALBUM CREATION ---
