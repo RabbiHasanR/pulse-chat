@@ -950,6 +950,7 @@ import json
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from utils.redis_client import redis_client, RedisKeys
+from background_worker.chats.tasks import mark_delivered_and_notify_senders
 
 class UserSocketConsumer(AsyncWebsocketConsumer):
     
@@ -996,6 +997,10 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
             await redis_client.sadd(RedisKeys.ONLINE_USERS, self.user.id)
             # Notify everyone watching me
             await self._notify_my_audience("online")
+            
+            # 3. TRIGGER DELIVERY REPORT (Background Task)
+            # This handles messages received while the user was completely Offline.
+            mark_delivered_and_notify_senders.delay(self.user.id)
 
     async def disconnect(self, close_code):
         if not getattr(self, "user", None): return

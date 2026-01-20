@@ -1,7 +1,9 @@
+import asyncio
 from celery import shared_task
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.cache import cache
+from django.db.models import Max
 
 from botocore.exceptions import BotoCoreError, ClientError
 from socket import timeout as SocketTimeout
@@ -527,3 +529,62 @@ def _handle_failure(asset_id, error):
         
     except Exception as e:
         print(f"Critical DB Error in Failure Handler: {e}")
+        
+        
+        
+        
+        
+        
+        
+
+@shared_task(ignore_result=True, time_limit=10, expires=60)
+def mark_delivered_and_notify_senders(user_id):
+    """
+    Optimized:
+    1. Single DB Query for IDs.
+    2. Single DB Query for Update.
+    3. Parallel Redis calls for Notifications.
+    """
+    # 1. Aggregation
+    pending_groups = ChatMessage.objects.filter(
+        receiver_id=user_id,
+        status=ChatMessage.Status.SENT
+    ).values('sender_id').annotate(last_id=Max('id'))
+
+    if not pending_groups:
+        return
+
+    # 2. Bulk Database Update
+    ChatMessage.objects.filter(
+        receiver_id=user_id,
+        status=ChatMessage.Status.SENT
+    ).update(status=ChatMessage.Status.DELIVERED)
+
+    # 3. Parallel Notifications (The Scalable Part)
+    async def send_parallel_notifications():
+        channel_layer = get_channel_layer()
+        tasks = []
+
+        for entry in pending_groups:
+            sender_id = entry['sender_id']
+            last_msg_id = entry['last_id']
+            
+            event = {
+                "type": "forward_event",
+                "payload": {
+                    "type": "chat_delivery_receipt",
+                    "data": {
+                        "receiver_id": user_id,
+                        "last_delivered_id": last_msg_id
+                    }
+                }
+            }
+            # We assume channel_layer.group_send handles the sharding/connection pooling
+            tasks.append(channel_layer.group_send(f"user_{sender_id}", event))
+        
+        if tasks:
+            # Fire all requests concurrently. 
+            # Redis handles 100k ops/sec, so 100 ops here is instant.
+            await asyncio.gather(*tasks)
+
+    async_to_sync(send_parallel_notifications)()
