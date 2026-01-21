@@ -306,13 +306,13 @@ User = get_user_model()
 class SendMessageView(APIView):
     """
     Unified Endpoint for Sending Messages.
-    - Handles Text Only
-    - Handles Text + Attachments (Returns S3 Upload URLs)
-    - Handles Replies
+    Optimized for High Throughput (Low Latency).
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        # 1. VALIDATION LAYER
+        # We use the serializer validation, which is robust.
         ser = SendMessageInSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid data", errors=ser.errors, status=400)
@@ -320,7 +320,7 @@ class SendMessageView(APIView):
         data = ser.validated_data
         user = request.user
         receiver_id = data['receiver_id']
-        text = data.get('text', '')
+        text = data.get('text', '') # Defaults to empty string
         reply_to_id = data.get('reply_to_id')
         attachments = data.get('attachments', [])
 
@@ -328,6 +328,7 @@ class SendMessageView(APIView):
         # SCENARIO 1: MEDIA MESSAGE (Init S3)
         # ------------------------------------
         if attachments:
+            # Atomic Transaction is handled inside Service
             msg, upload_instructions = ChatService.initialize_media_message(
                 sender=user,
                 receiver_id=receiver_id,
@@ -336,13 +337,16 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
             
+            # OPTIMIZATION: Return strict JSON structure.
+            # No heavy serialization here.
             return success_response(
-                message="Media message initialized",
+                message="Media initialized",
                 data={
                     "message_id": msg.id,
                     "type": "media",
-                    "uploads": upload_instructions, # S3 URLs
-                    "created_at": msg.created_at
+                    "status": msg.status, # e.g. 'seen' or 'sent' based on Redis
+                    "created_at": msg.created_at,
+                    "uploads": upload_instructions # S3 URLs
                 },
                 status=201
             )
@@ -351,6 +355,7 @@ class SendMessageView(APIView):
         # SCENARIO 2: TEXT MESSAGE
         # ------------------------------------
         else:
+            # Atomic Transaction is handled inside Service
             msg = ChatService.send_text_message(
                 sender=user,
                 receiver_id=receiver_id,
@@ -358,19 +363,23 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
 
-            # We return the simple message structure so UI can append it immediately
+            # OPTIMIZATION: "Lean Response"
+            # We DO NOT serialize the full message object here.
+            # The client already has the text; it just needs the ID and Timestamp to "confirm" the bubble.
             return success_response(
                 message="Message sent",
                 data={
                     "message_id": msg.id,
                     "type": "text",
+                    "status": msg.status, # Frontend updates gray tick -> double tick immediately
                     "created_at": msg.created_at,
-                    # Optional: Return full serialized message for UI consistency
-                    "message": ChatMessageSerializer(msg, context={'request': request}).data
+                    # "reply_metadata": ... (Only add if your frontend STRICTLY needs it to render the confirm)
                 },
                 status=201
             )
-
+            
+            
+            
 # --- COMPLETE UPLOAD VIEW (Kept largely the same but cleaned) ---
 class CompleteUpload(APIView):
     permission_classes = [IsAuthenticated]
