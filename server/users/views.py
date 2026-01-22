@@ -2,6 +2,7 @@ import jwt
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
+from asgiref.sync import async_to_sync
 
 from rest_framework import status
 from rest_framework.views import APIView
@@ -21,6 +22,8 @@ from utils.jwt_util import issue_token_for_user, verify_token_signature
 from background_worker.users.tasks import send_templated_email_task
 
 from .services import AvatarService
+
+from utils.redis_client import ChatRedisService
 
 
 
@@ -347,17 +350,42 @@ class GetContactsView(APIView):
 
     def get(self, request):
         try:
+            # 1. OPTIMIZED SQL QUERY
+            # select_related: Fetches 'ChatUser' data in the same SQL query.
+            # order_by: Matches the pagination ordering (A-Z).
             contacts = Contact.objects.filter(owner=request.user)\
-                .select_related('contact_user')
+                .select_related('contact_user')\
+                .order_by('contact_user__full_name')
 
+            # 2. PAGINATE (Limit 10)
+            # This executes the SQL query and returns only the 10 users for this page.
             paginator = ContactCursorPagination()
             page = paginator.paginate_queryset(contacts, request)
             
-            serializer = ContactSerializer(page, many=True)
+            # 3. REDIS BATCH LOOKUP (The Scalable Part)
+            # We only check Redis for the 10 people currently on the screen.
+            if page:
+                # Extract IDs: [101, 102, 103...]
+                contact_user_ids = [c.contact_user_id for c in page]
+                
+                # Fetch Status: {101: True, 102: False...}
+                # async_to_sync is needed because views are synchronous
+                online_status_map = async_to_sync(ChatRedisService.get_online_status_batch)(contact_user_ids)
+            else:
+                online_status_map = {}
+
+            # 4. SERIALIZE WITH CONTEXT
+            # We inject the Redis results into the serializer context
+            serializer = ContactSerializer(
+                page, 
+                many=True, 
+                context={'online_status_map': online_status_map}
+            )
 
             return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
+            # Log the full error for debugging
             import traceback
             traceback.print_exc()
             return error_response(message="Failed to retrieve contacts", errors=str(e), status=500)

@@ -18,11 +18,16 @@ class ContactUserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'full_name', 'avatar_url']
 
 class ContactSerializer(serializers.ModelSerializer):
-    contact_user = ContactUserSerializer()
+    contact_user = ContactUserSerializer(read_only=True)
+    is_online = serializers.SerializerMethodField()
 
     class Meta:
         model = Contact
-        fields = ['contact_user']
+        fields = ['id', 'contact_user', 'is_online']
+
+    def get_is_online(self, obj):
+        status_map = self.context.get('online_status_map', {})
+        return status_map.get(obj.contact_user_id, False)
         
         
         
