@@ -14,11 +14,13 @@ from drf_yasg import openapi
 
 from .models import ChatUser, Contact
 from .pagination import ContactCursorPagination, UserCursorPagination
-from .serializers import UserRegistrationSerializer, ContactSerializer, ContactUserSerializer
+from .serializers import UserRegistrationSerializer, ContactSerializer, ContactUserSerializer, InitAvatarUploadIn, ConfirmAvatarUploadIn
 from utils.response import success_response, error_response
 from utils.auth_util import generate_otp, generate_email_token
 from utils.jwt_util import issue_token_for_user, verify_token_signature
 from background_worker.users.tasks import send_templated_email_task
+
+from .services import AvatarService
 
 
 
@@ -379,3 +381,63 @@ class ExploreUsersView(APIView):
 
         except Exception as e:
             return error_response(message="Failed to retrieve users", errors=str(e), status=500)
+        
+        
+        
+        
+        
+
+class UserAvatarView(APIView):
+    """
+    Handles User Avatar Uploads via S3 Presigned URLs.
+    
+    Flow:
+    1. POST: Request a URL to upload to 'avatars/temp/'.
+    2. Client: Uploads file directly to S3.
+    3. PUT: Confirm upload. Server moves file to 'avatars/active/' and updates DB.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """Step 1: Initialize Upload (Get Presigned URL)"""
+        ser = InitAvatarUploadIn(data=request.data)
+        if not ser.is_valid():
+            return error_response(errors=ser.errors, status=400)
+        
+        d = ser.validated_data
+        
+        try:
+            result = AvatarService.generate_avatar_upload_url(
+                user=request.user,
+                file_name=d['file_name'],
+                content_type=d['content_type']
+            )
+            return success_response(
+                message="Upload initialized",
+                data=result, # Returns {upload_url, object_key}
+                status=200
+            )
+        except Exception as e:
+            return error_response(message="Failed to generate upload URL", status=500)
+
+    def put(self, request):
+        """Step 2: Confirm Upload (Move File & Update Profile)"""
+        ser = ConfirmAvatarUploadIn(data=request.data)
+        if not ser.is_valid():
+            return error_response(errors=ser.errors, status=400)
+        
+        temp_key = ser.validated_data['object_key']
+        
+        try:
+            new_url = AvatarService.confirm_avatar_update(request.user, temp_key)
+            return success_response(
+                message="Avatar updated successfully",
+                data={"avatar_url": new_url},
+                status=200
+            )
+        except ValueError as e:
+            # Security violation (trying to confirm someone else's file)
+            return error_response(message=str(e), status=403)
+        except Exception as e:
+            # S3 Error (e.g. file not found in temp because upload failed)
+            return error_response(message="Confirmation failed. File may be missing or expired.", status=400)

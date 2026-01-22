@@ -8,7 +8,8 @@ from .views import (
     LogoutView,
     AddContactView,
     GetContactsView,
-    ExploreUsersView
+    ExploreUsersView,
+    UserAvatarView
 )
 
 urlpatterns = [
@@ -26,6 +27,8 @@ urlpatterns = [
     
     path('add-contacts/', AddContactView.as_view(), name='add-contacts'),
     
-    path('explore-users/', ExploreUsersView.as_view(), name='explore-users')
+    path('explore-users/', ExploreUsersView.as_view(), name='explore-users'),
+    
+    path('avatar/', UserAvatarView.as_view(), name='user-avatar'),
     
 ]
