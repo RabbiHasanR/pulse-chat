@@ -4,6 +4,4 @@
 3. align with preapareupload and completedupload.
 4. also when user first connect websocket or in online then need all message which status is sent for this user update status and send all reciver notify delivers message with last deiver message id
 5. also when user send to message with unknown who is not contact or chat list must be send reciver_id, name,avatar url.
-6. also need to update get contact api for add online staus and get contact which is more active and with conversation with. so need optimize algorithm
-7. need to upload avatar for user api
 8. write all necessary test for entire system and update old test.
