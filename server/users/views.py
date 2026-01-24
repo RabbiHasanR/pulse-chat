@@ -350,32 +350,22 @@ class GetContactsView(APIView):
 
     def get(self, request):
         try:
-            # 1. OPTIMIZED SQL QUERY
-            # select_related: Fetches 'ChatUser' data in the same SQL query.
-            # order_by: Matches the pagination ordering (A-Z).
+
             contacts = Contact.objects.filter(owner=request.user)\
                 .select_related('contact_user')\
                 .order_by('contact_user__full_name')
 
-            # 2. PAGINATE (Limit 10)
-            # This executes the SQL query and returns only the 10 users for this page.
             paginator = ContactCursorPagination()
             page = paginator.paginate_queryset(contacts, request)
             
-            # 3. REDIS BATCH LOOKUP (The Scalable Part)
-            # We only check Redis for the 10 people currently on the screen.
+
             if page:
-                # Extract IDs: [101, 102, 103...]
                 contact_user_ids = [c.contact_user_id for c in page]
                 
-                # Fetch Status: {101: True, 102: False...}
-                # async_to_sync is needed because views are synchronous
                 online_status_map = async_to_sync(ChatRedisService.get_online_status_batch)(contact_user_ids)
             else:
                 online_status_map = {}
 
-            # 4. SERIALIZE WITH CONTEXT
-            # We inject the Redis results into the serializer context
             serializer = ContactSerializer(
                 page, 
                 many=True, 
@@ -385,7 +375,6 @@ class GetContactsView(APIView):
             return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
-            # Log the full error for debugging
             import traceback
             traceback.print_exc()
             return error_response(message="Failed to retrieve contacts", errors=str(e), status=500)
@@ -416,18 +405,9 @@ class ExploreUsersView(APIView):
         
 
 class UserAvatarView(APIView):
-    """
-    Handles User Avatar Uploads via S3 Presigned URLs.
-    
-    Flow:
-    1. POST: Request a URL to upload to 'avatars/temp/'.
-    2. Client: Uploads file directly to S3.
-    3. PUT: Confirm upload. Server moves file to 'avatars/active/' and updates DB.
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """Step 1: Initialize Upload (Get Presigned URL)"""
         ser = InitAvatarUploadIn(data=request.data)
         if not ser.is_valid():
             return error_response(errors=ser.errors, status=400)
@@ -442,14 +422,13 @@ class UserAvatarView(APIView):
             )
             return success_response(
                 message="Upload initialized",
-                data=result, # Returns {upload_url, object_key}
+                data=result,
                 status=200
             )
         except Exception as e:
             return error_response(message="Failed to generate upload URL", status=500)
 
     def put(self, request):
-        """Step 2: Confirm Upload (Move File & Update Profile)"""
         ser = ConfirmAvatarUploadIn(data=request.data)
         if not ser.is_valid():
             return error_response(errors=ser.errors, status=400)
@@ -464,8 +443,6 @@ class UserAvatarView(APIView):
                 status=200
             )
         except ValueError as e:
-            # Security violation (trying to confirm someone else's file)
             return error_response(message=str(e), status=403)
         except Exception as e:
-            # S3 Error (e.g. file not found in temp because upload failed)
             return error_response(message="Confirmation failed. File may be missing or expired.", status=400)
