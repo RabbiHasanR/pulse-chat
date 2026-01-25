@@ -320,26 +320,24 @@ class AddContactView(APIView):
             contact_user=contact_user
         )
 
+        response_data = {
+            "id": contact_user.id,
+            "email": contact_user.email,
+            "username": contact_user.username,
+            "full_name": contact_user.full_name,
+            "avatar_url": contact_user.avatar_url
+        }
+
         if not created:
             return success_response(
                 message="Already in contacts",
-                data={
-                    "id": contact_user.id,
-                    "email": contact_user.email,
-                    "username": contact_user.username,
-                    "full_name": contact_user.full_name
-                },
+                data=response_data,
                 status=status.HTTP_200_OK
             )
 
         return success_response(
             message="Contact added successfully",
-            data={
-                "id": contact_user.id,
-                "email": contact_user.email,
-                "username": contact_user.username,
-                "full_name": contact_user.full_name
-            },
+            data=response_data,
             status=status.HTTP_201_CREATED
         )
         
