@@ -18,14 +18,22 @@ class ChatUser(AbstractUser):
     @property
     def avatar_url(self):
         """
-        Dynamically constructs the S3 URL.
+        Dynamically constructs the S3 URL based on the environment.
         Returns None if key or bucket is missing.
         """
-        if self.avatar_bucket and self.avatar_key:
-            # Standard S3 URL format. 
-            # If you use a custom domain or CloudFront, change this string.
-            return f"https://{self.avatar_bucket}.s3.amazonaws.com/{self.avatar_key}"
-        return None
+        if not self.avatar_bucket or not self.avatar_key:
+            return None
+
+        # 1. LOCAL DEV (S3 MOCK)
+        # If we are using the mock, we must serve from localhost, not AWS.
+        if settings.USE_S3_MOCK:
+            # Moto/S3Mock usually runs on port 5000.
+            # Format: http://localhost:5000/{bucket}/{key}
+            return f"http://localhost:5000/{self.avatar_bucket}/{self.avatar_key}"
+
+        # 2. PRODUCTION (AWS S3)
+        # Standard S3 URL format.
+        return f"https://{self.avatar_bucket}.s3.amazonaws.com/{self.avatar_key}"
 
 
 
