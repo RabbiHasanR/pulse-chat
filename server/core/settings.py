@@ -234,5 +234,24 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 
 
+# ------------------------------------------------------------------------------
+# AWS S3 / STORAGE CONFIGURATION (New)
+# ------------------------------------------------------------------------------
+
+# 1. AWS Credentials
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME')
+AWS_S3_REGION_NAME = os.getenv('AWS_S3_REGION_NAME', 'us-east-1')
+
+# 2. Local Testing (Moto/S3Mock)
+# This flag determines if we should auto-create buckets and rewrite URLs for localhost
+USE_S3_MOCK = os.getenv('USE_S3_MOCK', 'False') == 'True'
+AWS_S3_ENDPOINT_URL = os.getenv('AWS_S3_ENDPOINT_URL')
+
+# 3. Validation
+if AWS_ACCESS_KEY_ID is None:
+    print("⚠️ WARNING: AWS_ACCESS_KEY_ID is missing. S3 uploads will fail.")
+
 # Silence drf-yasg deprecation warning
 SWAGGER_USE_COMPAT_RENDERERS = False

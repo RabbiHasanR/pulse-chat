@@ -424,6 +424,7 @@ class UserAvatarView(APIView):
                 status=200
             )
         except Exception as e:
+            print(e)
             return error_response(message="Failed to generate upload URL", status=500)
 
     def put(self, request):
