@@ -9,10 +9,13 @@ from .views import (
     AddContactView,
     GetContactsView,
     ExploreUsersView,
-    UserAvatarView
+    UserAvatarView,
+    GetUserMeView
 )
 
 urlpatterns = [
+    path('me/', GetUserMeView.as_view(), name='user-me'),
+    
     path("register/", RegisterUserView.as_view(), name="register"),
 
     path("send-otp/", SendOTPView.as_view(), name="send-otp"),

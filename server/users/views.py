@@ -15,7 +15,7 @@ from drf_yasg import openapi
 
 from .models import ChatUser, Contact
 from .pagination import ContactCursorPagination, UserCursorPagination
-from .serializers import UserRegistrationSerializer, ContactSerializer, ContactUserSerializer, InitAvatarUploadIn, ConfirmAvatarUploadIn
+from .serializers import UserRegistrationSerializer, ContactSerializer, UserSerializer, InitAvatarUploadIn, ConfirmAvatarUploadIn
 from utils.response import success_response, error_response
 from utils.auth_util import generate_otp, generate_email_token
 from utils.jwt_util import issue_token_for_user, verify_token_signature
@@ -390,7 +390,7 @@ class ExploreUsersView(APIView):
             paginator = UserCursorPagination()
             page = paginator.paginate_queryset(users, request)
 
-            serializer = ContactUserSerializer(page, many=True)
+            serializer = UserSerializer(page, many=True)
 
             return paginator.get_paginated_response(serializer.data)
 
@@ -445,3 +445,16 @@ class UserAvatarView(APIView):
             return error_response(message=str(e), status=403)
         except Exception as e:
             return error_response(message="Confirmation failed. File may be missing or expired.", status=400)
+        
+        
+
+class GetUserMeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserSerializer(request.user)
+        return success_response(
+            message="User details retrieved successfully",
+            data=serializer.data,
+            status=200
+        )

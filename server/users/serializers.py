@@ -12,13 +12,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
 
 
-class ContactUserSerializer(serializers.ModelSerializer):
+class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatUser
         fields = ['id', 'username', 'email', 'full_name', 'avatar_url']
 
 class ContactSerializer(serializers.ModelSerializer):
-    contact_user = ContactUserSerializer(read_only=True)
+    contact_user = UserSerializer(read_only=True)
     is_online = serializers.SerializerMethodField()
 
     class Meta:
