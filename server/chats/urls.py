@@ -5,7 +5,6 @@ urlpatterns = [
     path('send/', SendMessageView.as_view(), name='send-message'),
     path('forward/', ForwardMessageView.as_view(), name='forward-message'),
     
-    # 2. Upload Management
     path('upload/sign-batch/', SignBatchView.as_view(), name='upload-sign-batch'),
 
     path("upload/complete/", CompleteUpload.as_view(), name="chat-media-complete"),
