@@ -348,7 +348,6 @@ class GetContactsView(APIView):
 
     def get(self, request):
         try:
-
             contacts = Contact.objects.filter(owner=request.user)\
                 .select_related('contact_user')\
                 .order_by('contact_user__full_name')
@@ -356,13 +355,15 @@ class GetContactsView(APIView):
             paginator = ContactCursorPagination()
             page = paginator.paginate_queryset(contacts, request)
             
-
+            online_status_map = {}
+            
             if page:
                 contact_user_ids = [c.contact_user_id for c in page]
                 
-                online_status_map = async_to_sync(ChatRedisService.get_online_status_batch)(contact_user_ids)
-            else:
-                online_status_map = {}
+                online_status_map = async_to_sync(ChatRedisService.subscribe_and_get_presences)(
+                    observer_id=request.user.id,
+                    target_ids=contact_user_ids
+                )
 
             serializer = ContactSerializer(
                 page, 
