@@ -68,8 +68,10 @@ class ChatService:
         conversation.save(update_fields=['last_message_content', 'last_message_type', 'last_message_time', 'unread_counts', 'updated_at'])
 
     @staticmethod
-    def _notify_receiver(receiver_id, message_instance):
-        """Helper: Sends the WebSocket event"""
+    def _broadcast_message(sender_id, receiver_id, message_instance):
+        """
+        Helper: Sends the WebSocket event to BOTH Receiver and Sender (for Multi-Device Sync).
+        """
         channel_layer = get_channel_layer()
         serialized_data = ChatMessageSerializer(message_instance).data
         
@@ -80,8 +82,16 @@ class ChatService:
                 "data": serialized_data
             }
         }
+        
+        # 1. Notify Receiver (So they see the new message)
         async_to_sync(channel_layer.group_send)(
             ChatService._get_channel_group(receiver_id), 
+            event
+        )
+
+        # 2. Notify Sender (So their OTHER devices update instantly)
+        async_to_sync(channel_layer.group_send)(
+            ChatService._get_channel_group(sender_id), 
             event
         )
 
@@ -141,9 +151,9 @@ class ChatService:
             status=status
         )
 
-        # E. Update Conv & Notify
+        # E. Update Conv & Broadcast
         ChatService._update_conversation(conversation, receiver_id, content, 'text', msg.created_at, is_viewing)
-        ChatService._notify_receiver(receiver_id, msg)
+        ChatService._broadcast_message(sender.id, receiver_id, msg)
         
         return msg
 
@@ -210,16 +220,16 @@ class ChatService:
             params["asset_id"] = asset.id
             upload_instructions.append(params)
 
-        # F. Update Conv & Notify
+        # F. Update Conv & Broadcast
         # Note: We notify immediately so receiver sees "Sending photo..." (or the gray grid)
         ChatService._update_conversation(conversation, receiver_id, text_caption, msg_type, msg.created_at, is_viewing)
-        ChatService._notify_receiver(receiver_id, msg)
+        ChatService._broadcast_message(sender.id, receiver_id, msg)
 
         return msg, upload_instructions
 
     @staticmethod
     def _generate_s3_params(asset, item_data, object_key):
-        """Helper to generate S3 params for a single file (Adapted from your logic)"""
+        """Helper to generate S3 params for a single file"""
         file_size = asset.file_size
         content_type = asset.content_type
         
@@ -277,9 +287,6 @@ class ChatService:
     def forward_message_batch(sender, original_message_id, receiver_ids, new_text=None):
         """
         Forwards a message to multiple users efficiently.
-        - Clones MediaAsset rows (pointing to same S3 objects) = Zero Storage Cost.
-        - Preserves 'Forwarded From' metadata.
-        - Handles 'Unread' counts, Redis Status, and Socket events for each receiver.
         """
         # 1. Fetch Original Message (Efficiently with assets and sender)
         try:
@@ -288,18 +295,13 @@ class ChatService:
             return 0
 
         # 2. Determine Forward Metadata
-        # If the message we are forwarding was ITSELF a forward, keep the original source.
-        # Otherwise, the source is the person who wrote the message we are forwarding.
         source_name = original_msg.forward_source_name or original_msg.sender.full_name
         
         # 3. Determine Content (Caption Logic)
-        # If new_text is provided (e.g., a new caption for a photo), use it.
-        # Otherwise, preserve the original content/caption.
         final_content = new_text if new_text is not None else original_msg.content
         msg_type = original_msg.message_type
         
         # 4. Process Each Receiver
-        # We wrap the loop in a transaction to ensure partial failures don't leave bad states
         count = 0
         with transaction.atomic():
             for receiver_id in receiver_ids:
@@ -327,13 +329,11 @@ class ChatService:
                     # Forwarding Metadata
                     is_forwarded=True,
                     forward_source_name=source_name,
-                    # Optimization: Copy the asset count so lists don't need to join tables
+                    # Optimization: Copy the asset count
                     asset_count=original_msg.asset_count
                 )
 
                 # D. Clone Assets (The "Smart Copy")
-                # We duplicate the DB rows but point to the EXISTING S3 Keys.
-                # This makes forwarding a 1GB video instant and free.
                 if original_msg.asset_count > 0:
                     new_assets = []
                     for old_asset in original_msg.media_assets.all():
@@ -352,15 +352,14 @@ class ChatService:
                             processing_status="done" # It is already processed!
                         ))
                     
-                    # Bulk Create is significantly faster than .save() in a loop
                     if new_assets:
                         MediaAsset.objects.bulk_create(new_assets)
 
-                # E. Update Conversation & Notify
+                # E. Update Conversation & Broadcast
                 ChatService._update_conversation(
                     conversation, receiver_id, final_content, msg_type, new_msg.created_at, is_viewing
                 )
-                ChatService._notify_receiver(receiver_id, new_msg)
+                ChatService._broadcast_message(sender.id, receiver_id, new_msg)
                 
                 count += 1
 
@@ -371,15 +370,12 @@ class ChatService:
     @transaction.atomic
     def mark_messages_as_read(reader, conversation, partner_id, latest_message_id=None):
         """
-        OPTIMIZED:
-        - If 'latest_message_id' is passed, we SKIP the lookup query.
-        - Otherwise, we find it ourselves (fallback for scrolling/history).
+        Marks messages as read and sends Read Receipt (Blue Tick) to the Sender (Partner).
         """
         reader_str = str(reader.id)
         counts = conversation.unread_counts or {}
 
         # 1. OPTIMIZATION: If Badge is 0, DO NOTHING.
-        # This makes 99% of page refreshes cost 0 DB Writes.
         if counts.get(reader_str, 0) == 0:
             return
 
@@ -405,11 +401,10 @@ class ChatService:
             return
 
         # 4. Bulk Update (The Range Update)
-        # "Mark everything OLDER than or EQUAL to cursor as SEEN"
         ChatMessage.objects.filter(
             conversation=conversation,
             sender_id=partner_id,
-            id__lte=cursor_id, # <--- Safety Check
+            id__lte=cursor_id,
             status__in=[ChatMessage.Status.SENT, ChatMessage.Status.DELIVERED]
         ).update(status=ChatMessage.Status.SEEN)
 
@@ -427,6 +422,7 @@ class ChatService:
             }
         }
         
+        # Notify the PARTNER (Sender) so their ticks turn blue
         async_to_sync(channel_layer.group_send)(
             ChatService._get_channel_group(partner_id), 
             event
