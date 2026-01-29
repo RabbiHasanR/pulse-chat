@@ -139,10 +139,10 @@ class CompleteUploadIn(serializers.Serializer):
 
 
 class UserSimpleSerializer(serializers.ModelSerializer):
-    avatar = serializers.CharField(source='avatar_url', read_only=True)
+    # avatar = serializers.CharField(source='avatar_url', read_only=True)
     class Meta:
         model = User
-        fields = ['id', 'email', 'full_name', 'avatar'] 
+        fields = ['id', 'email', 'full_name', 'avatar_url'] 
 
 class ChatListSerializer(serializers.ModelSerializer):
     partner = serializers.SerializerMethodField()
@@ -230,6 +230,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
 
 # --- 2. CHAT MESSAGE SERIALIZER ---
 class ChatMessageSerializer(serializers.ModelSerializer):
+    sender = UserSimpleSerializer(read_only=True)
     media_assets = MediaAssetSerializer(many=True, read_only=True)
     is_me = serializers.SerializerMethodField()
     
