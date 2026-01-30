@@ -1,5 +1,3 @@
-
-
 # 📖 Real-Time Presence & Chat Consumer Workflow
 
 ## **1. Overview**
@@ -8,11 +6,11 @@ The `UserSocketConsumer` is the **central nervous system** of your real-time cha
 
 **Key Features:**
 
-1. **Multi-Device Synchronization:** Handles users connected via multiple tabs (Chrome, Firefox) or devices (Mobile, Desktop) simultaneously.
+1. **Multi-Device Synchronization (Echo):** Messages sent from one device (e.g., Desktop) are instantly broadcast to the user's other devices (e.g., Mobile) to keep chat history in sync.
 2. **Global Online/Offline Status:** A user is "Online" if they have *at least one* active connection.
 3. **Context-Aware Read Receipts:** Tracks exactly which conversation a user is looking at to trigger "Blue Ticks" instantly.
-4. **Typing Indicators:** Real-time feedback when a user is typing.
-5. **Smart Notifications:** Uses Pub/Sub to notify friends only when status changes.
+4. **Instant UI Rendering:** Message payloads include the sender's avatar and name, allowing the frontend to render new conversations without extra API calls.
+5. **Smart Subscriptions:** Viewing the Contact List automatically subscribes a user to real-time status updates from their friends.
 
 ---
 
@@ -20,13 +18,13 @@ The `UserSocketConsumer` is the **central nervous system** of your real-time cha
 
 * **Django Channels:** Manages the persistent WebSocket connections.
 * **Redis (Sets):** Stores the list of active socket IDs (`channel_name`) for each user.
-* **Redis (Pub/Sub):** Used to broadcast "User X is Online" events to their friends.
+* **Redis (Pub/Sub):** Broadcasts events like "User X is Online" or "New Message".
 
 ---
 
 ## **3. How Redis is Connected**
 
-The consumer uses `server/utils/redis_client.py` to talk to Redis. We use **Redis Sets** because they automatically handle uniqueness (adding the same ID twice does nothing) and counting.
+The consumer uses `server/utils/redis_client.py` to talk to Redis. We use **Redis Sets** for uniqueness and atomic counting.
 
 | Redis Key Pattern | Type | Purpose |
 | --- | --- | --- |
@@ -37,6 +35,7 @@ The consumer uses `server/utils/redis_client.py` to talk to Redis. We use **Redi
 
 <br>*(Size > 0 = Message Read Instantly)* |
 | `user:{id}:presence_audience` | **Set** | List of User IDs who should be notified when this user goes Online/Offline. |
+| `online_users` | **Set** | A global set of all User IDs currently online (used for quick API checks). |
 
 ---
 
@@ -46,14 +45,14 @@ The consumer uses `server/utils/redis_client.py` to talk to Redis. We use **Redi
 
 When a user opens your app:
 
-1. **Auth Check:** The consumer checks `self.scope['user']`. If anonymous, it sends an error and closes.
-2. **Group Join:** The socket joins the room `user_{id}`. This is the "mailbox" where the server can send this specific user push notifications.
+1. **Auth Check:** The consumer verifies the JWT Token in the query params (`?token=...`). If invalid, the connection closes.
+2. **Group Join:** The socket joins the room `user_{id}`. This is the "mailbox" where the server sends push notifications.
 3. **Redis Registration:**
 * The unique socket ID (`self.channel_name`) is added to `user:{id}:connections`.
-* **Logic:** `SCARD` (Set Cardinallity) checks the size of the set.
+* **Logic:** Checks if this is the user's *first* connection (`SCARD == 1`).
 * **Result:**
-* If Count == 1: This is the **First** device. **User is Online**.  Trigger "Online" notification.
-* If Count > 1: User was already online on another device. Do nothing silent.
+* **If First Device:** Triggers `_notify_my_audience("online")` to alert friends.
+* **If Secondary Device:** Connects silently (user is already online).
 
 
 
@@ -65,11 +64,11 @@ When the user clicks on a conversation with "User B":
 
 1. **Frontend:** Sends `{ "type": "chat_open", "receiver_id": 5 }`.
 2. **Consumer:**
-* Checks if this tab was viewing a different chat previously. If so, removes it from that list.
+* Removes this tab's ID from any previous "viewing" sets.
 * Adds `self.channel_name` to `user:{me}:viewing:{5}`.
 
 
-3. **Result:** If User B sends a message now, the backend checks this Redis key. If it exists, the message is marked **READ** instantly.
+3. **Result:** If User B sends a message now, the backend sees you are viewing and marks the message as **READ** instantly.
 
 ### **C. The "Chat Close" Event**
 
@@ -77,51 +76,87 @@ When the user navigates back to the chat list or minimizes the app:
 
 1. **Frontend:** Sends `{ "type": "chat_close", "receiver_id": 5 }`.
 2. **Consumer:** Removes `self.channel_name` from `user:{me}:viewing:{5}`.
-3. **Result:** Subsequent messages will be "Delivered" (Grey Ticks), not "Read" (Blue Ticks).
+3. **Result:** Subsequent messages will be "Delivered" (Grey Ticks).
 
 ### **D. Disconnection (Closing a Tab)**
 
 When the user closes the tab:
 
-1. **Cleanup Viewing:** If they were looking at a chat, remove `channel_name` from the viewing set.
-2. **Cleanup Connection:** Remove `channel_name` from `user:{id}:connections`.
+1. **Cleanup Viewing:** Removes `channel_name` from any viewing sets.
+2. **Cleanup Connection:** Removes `channel_name` from `user:{id}:connections`.
 3. **Offline Logic:**
-* Redis counts the remaining connections.
-* If Count == 0: This was the **Last** device. **User is Offline**.  Trigger "Offline" notification.
+* Checks remaining connection count.
+* **If Count == 0:** This was the last device. Triggers `_notify_my_audience("offline")`.
 
 
 
 ---
 
-## **5. Code Explanation (How it works)**
-
-### **The Magic of `channel_name**`
-
-In the code, you will see `self.channel_name`.
-
-* **What is it?** A random string generated by Django Channels (e.g., `specific.Active.92831...`).
-* **Why use it?** It uniquely identifies **THIS specific tab**.
-* **How it replaces `tab_id`:** Since the server generates it, we don't need the client to send a UUID. It's secure and collision-proof.
-
-### **Key Methods in `UserSocketConsumer**`
-
-* **`connect()`**: The entry point. Sets up the Redis state and joins the Channel Group.
-* **`_handle_chat_open(data)`**: Updates the "Viewing" Redis Set. Critical for blue ticks.
-* **`_notify_my_audience(status)`**: Loops through the `presence_audience` Redis set and sends a WebSocket message to every friend saying "I am now Online/Offline".
-* **`disconnect()`**: The cleanup crew. Ensures no "ghost" connections remain in Redis.
-
----
-
-## **6. API Event Contract (Frontend Docs)**
+## **5. API Event Contract (Frontend Docs)**
 
 ### **Outbound (Server  Client)**
 
-| Event Type | Payload Example | Meaning |
-| --- | --- | --- |
-| `presence_update` | `{ "user_id": 5, "status": "online" }` | Update the green dot in your UI for this user. |
-| `chat_typing` | `{ "sender_id": 3, "receiver_id": 1 }` | Show "User 3 is typing..." animation. |
+These events arrive via WebSocket.
+
+#### **1. New Message (Receiver & Sender Echo)**
+
+Sent to **both** the receiver and the sender (on all devices).
+
+```json
+{
+    "type": "chat_message_new",
+    "data": {
+        "id": 105,
+        "content": "Hello World",
+        "message_type": "text",
+        "created_at": "2024-01-30T10:00:00Z",
+        "status": "sent",
+        "sender": {
+            "id": 2,
+            "full_name": "Alice Wonderland",
+            "avatar": "https://s3.aws.../avatar.jpg",
+            "username": "@alice"
+        },
+        "media_assets": []
+    }
+}
+
+```
+
+#### **2. Presence Update**
+
+Sent when a friend comes online or goes offline.
+
+```json
+{
+    "type": "presence_update",
+    "data": { 
+        "user_id": 5, 
+        "status": "online" // or "offline"
+    }
+}
+
+```
+
+#### **3. Read Receipt**
+
+Sent to the *sender* when the recipient reads their messages.
+
+```json
+{
+    "type": "chat_read_receipt",
+    "data": {
+        "conversation_id": 12,
+        "reader_id": 5,
+        "last_read_id": 105 // All messages <= 105 are read
+    }
+}
+
+```
 
 ### **Inbound (Client  Server)**
+
+Send these JSON frames to the server.
 
 | Event Type | Payload Example | When to send |
 | --- | --- | --- |
@@ -129,3 +164,24 @@ In the code, you will see `self.channel_name`.
 | `chat_close` | `{ "type": "chat_close", "receiver_id": 5 }` | User leaves the chat screen. |
 | `chat_typing` | `{ "type": "chat_typing", "receiver_id": 5 }` | User is typing in the input box. |
 | `ping` | `{ "type": "ping" }` | Every 30s to keep connection alive. |
+
+---
+
+## **6. Backend Integration Points**
+
+### **How the API talks to WebSockets**
+
+When you use the REST API (`POST /messages`), it uses `server/chats/services.py` to inject events into the socket layer:
+
+1. **Service:** `ChatService.send_text_message(...)`
+2. **Action:** Saves to DB.
+3. **Broadcast:** Calls `_broadcast_message(sender_id, receiver_id, msg)`.
+4. **Channel Layer:** Pushes the `chat_message_new` payload to `group:user_{sender_id}` AND `group:user_{receiver_id}`.
+
+### **How Contact List Subscribes Users**
+
+When you call `GET /api/users/contacts/`:
+
+1. **View:** Calls `ChatRedisService.subscribe_and_get_presences(...)`.
+2. **Redis:** Adds your ID to the `presence_audience` set of every contact in the list.
+3. **Result:** You immediately get future "Online/Offline" alerts for these people without needing to send manual socket commands.
