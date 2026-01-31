@@ -120,26 +120,20 @@ class ChatService:
         if kind == 'audio': return ChatMessage.MsgType.AUDIO
         return ChatMessage.MsgType.FILE
 
-    # =========================================================================
-    # 1. SEND TEXT MESSAGE
-    # =========================================================================
+
     @staticmethod
     @transaction.atomic
     def send_text_message(sender, receiver_id, content, reply_to_id=None):
-        # A. Setup Conversation
         p1, p2 = sorted([sender.id, receiver_id])
         conversation, _ = Conversation.objects.select_for_update().get_or_create(
             participant_1_id=p1, participant_2_id=p2,
             defaults={'unread_counts': {str(p1): 0, str(p2): 0}}
         )
 
-        # B. Determine Status
         status, is_viewing = ChatService._determine_initial_status(sender.id, receiver_id)
 
-        # C. Handle Reply
         reply_to, reply_metadata = ChatService._get_reply_data(reply_to_id)
 
-        # D. Create Message
         msg = ChatMessage.objects.create(
             conversation=conversation,
             sender=sender,
@@ -151,7 +145,6 @@ class ChatService:
             status=status
         )
 
-        # E. Update Conv & Broadcast
         ChatService._update_conversation(conversation, receiver_id, content, 'text', msg.created_at, is_viewing)
         ChatService._broadcast_message(sender.id, receiver_id, msg)
         
