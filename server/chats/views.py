@@ -496,36 +496,24 @@ class ChatListView(APIView):
     def get(self, request):
         user_id = request.user.id
 
-        # --- 1. OPTIMIZED QUERY ---
-        # We query the 'Conversation' container directly. 
-        # The 'last_message' and 'unread_counts' are already stored here (Denormalized),
-        # so we don't need any slow Subqueries or Joins on the Message table.
         queryset = Conversation.objects.filter(
             Q(participant_1=user_id) | Q(participant_2=user_id)
         ).annotate(
-            # Calculate who the 'other person' is for every row
             partner_id=Case(
                 When(participant_1=user_id, then=F('participant_2')),
                 default=F('participant_1')
             )
         ).order_by('-updated_at')
 
-        # --- 2. PAGINATION ---
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(queryset, request, view=self)
 
         if page is not None:
-            # Extract IDs of the 20 users currently visible on screen
             partner_ids = [getattr(obj, 'partner_id') for obj in page]
 
-            # --- 3. BATCH FETCH USERS (Solves N+1 DB) ---
-            # Fetch all 20 partner objects in exactly 1 Database Query
             user_objects = User.objects.filter(id__in=partner_ids)
-            # Create a lookup map: { 101: UserObject, 102: UserObject }
             user_map = {u.id: u for u in user_objects}
 
-            # --- 4. REDIS PIPELINE (Solves N+1 Network) ---
-            # Subscribe to updates AND get current online status in 1 Request
             online_status_map = {}
             if partner_ids:
                 online_status_map = async_to_sync(ChatRedisService.subscribe_and_get_presences)(
@@ -533,13 +521,12 @@ class ChatListView(APIView):
                     target_ids=partner_ids
                 )
 
-            # --- 5. SERIALIZE ---
-            # We pass the maps into the context so the Serializer doesn't have to query DB/Redis
+
             serializer = ChatListSerializer(
                 page, 
                 many=True, 
                 context={
-                    'request': request, # Needed for unread_count logic
+                    'request': request,
                     'online_status_map': online_status_map,
                     'user_map': user_map
                 }
@@ -547,7 +534,6 @@ class ChatListView(APIView):
             
             return paginator.get_paginated_response(serializer.data)
 
-        # Handle empty state
         return paginator.get_paginated_response([])
     
     
@@ -571,7 +557,6 @@ class ChatMessageListView(APIView):
         except Conversation.DoesNotExist:
             return self.pagination_class().get_paginated_response([])
 
-        # --- 1. FETCH MESSAGES FIRST (Query 1) ---
         queryset = ChatMessage.objects.filter(
             conversation=conversation
         ).select_related('reply_to').prefetch_related('media_assets').order_by('-created_at')
@@ -579,23 +564,15 @@ class ChatMessageListView(APIView):
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(queryset, request, view=self)
 
-        # --- 2. EXTRACT LATEST ID ---
         latest_msg_id = None
         
-        # We only use the page data if we are on the FIRST page (No 'cursor' param).
-        # If user is scrolling deep history (?cursor=...), the page[0] is NOT the latest message,
-        # so we pass None and let the Service do the lookup query safely.
         is_first_page = request.query_params.get('cursor') is None
         
         if is_first_page and page:
-            # The first item in the list is the absolute newest message
-            # We also check if it was sent by the partner (not me)
             top_msg = page[0]
             if top_msg.sender_id == partner_id:
                 latest_msg_id = top_msg.id
 
-        # --- 3. MARK READ (Query 2 - Reusing ID) ---
-        # If latest_msg_id is passed, the Service SKIPS the lookup query.
         ChatService.mark_messages_as_read(
             request.user, 
             conversation, 
