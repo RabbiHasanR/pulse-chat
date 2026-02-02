@@ -30,6 +30,7 @@ from .pagination import ChatListCursorPagination, MessageCursorPagination
 from .services import ChatService
 
 from utils.redis_client import ChatRedisService
+from utils.s3 import DEFAULT_EXPIRES_PART
 
 User = get_user_model()
 
@@ -380,7 +381,7 @@ class SendMessageView(APIView):
             
             
             
-# --- COMPLETE UPLOAD VIEW (Kept largely the same but cleaned) ---
+
 class CompleteUpload(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -392,7 +393,6 @@ class CompleteUpload(APIView):
         d = ser.validated_data
         object_key = d["object_key"]
 
-        # 1. Fetch Asset
         try:
             asset = MediaAsset.objects.select_related("message").get(
                 object_key=object_key,
@@ -401,7 +401,6 @@ class CompleteUpload(APIView):
         except MediaAsset.DoesNotExist:
             return error_response(message="Asset not found", status=404)
             
-        # 2. Complete S3 Multipart (If applicable)
         if d.get("parts") and d.get("upload_id"):
              s3.complete_multipart_upload(
                  Bucket=asset.bucket, 
@@ -423,10 +422,7 @@ class CompleteUpload(APIView):
     
 
 class SignBatchView(APIView):
-    """
-    Refreshes or generates the next batch of S3 Presigned URLs 
-    for an ongoing Multipart Upload.
-    """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -440,7 +436,6 @@ class SignBatchView(APIView):
         start = d["start_part"]
         count = d["batch_count"]
 
-        # Generate URLs for the requested range
         items = []
         for pn in range(start, start + count):
             url = s3.generate_presigned_url(
