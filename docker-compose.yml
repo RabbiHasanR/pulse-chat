@@ -1,3 +1,25 @@
+
+x-app-env: &app-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+  EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD}
+  DATABASE_USER: ${POSTGRES_USER}
+  DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+  DATABASE_NAME: ${POSTGRES_DB}
+  DATABASE_HOST: db
+  DATABASE_PORT: 5432
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CHANNEL_URL: redis://redis:6379/1
+  CACHE_URL: redis://redis:6379/2
+  DJANGO_DEBUG: "True"
+  USE_S3_MOCK: "True"
+  AWS_S3_ENDPOINT_URL: http://s3mock:5000
+  AWS_ACCESS_KEY_ID: fake_key
+  AWS_SECRET_ACCESS_KEY: fake_secret
+  AWS_S3_REGION_NAME: us-east-1
+  AWS_STORAGE_BUCKET_NAME: chat-bucket
+
 services:
   db:
     build:
@@ -51,26 +73,27 @@ services:
     image: server
     container_name: server
     hostname: server
-    environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
-      - DATABASE_USER=${POSTGRES_USER}
-      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
-      - DATABASE_NAME=${POSTGRES_DB}
-      - DATABASE_HOST=db
-      - DATABASE_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CHANNEL_URL=redis://redis:6379/1
-      - CACHE_URL=redis://redis:6379/2
-      - DJANGO_DEBUG=True                  
-      - USE_S3_MOCK=True                   
-      - AWS_S3_ENDPOINT_URL=http://s3mock:5000
-      - AWS_ACCESS_KEY_ID=fake_key
-      - AWS_SECRET_ACCESS_KEY=fake_secret
-      - AWS_S3_REGION_NAME=us-east-1
-      - AWS_STORAGE_BUCKET_NAME=chat-bucket
+    environment: *app-env
+    # environment:
+    #   - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+    #   - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+    #   - DATABASE_USER=${POSTGRES_USER}
+    #   - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+    #   - DATABASE_NAME=${POSTGRES_DB}
+    #   - DATABASE_HOST=db
+    #   - DATABASE_PORT=5432
+    #   - REDIS_HOST=redis
+    #   - REDIS_PORT=6379
+    #   - CELERY_BROKER_URL=redis://redis:6379/0
+    #   - CHANNEL_URL=redis://redis:6379/1
+    #   - CACHE_URL=redis://redis:6379/2
+    #   - DJANGO_DEBUG=True                  
+    #   - USE_S3_MOCK=True                   
+    #   - AWS_S3_ENDPOINT_URL=http://s3mock:5000
+    #   - AWS_ACCESS_KEY_ID=fake_key
+    #   - AWS_SECRET_ACCESS_KEY=fake_secret
+    #   - AWS_S3_REGION_NAME=us-east-1
+    #   - AWS_STORAGE_BUCKET_NAME=chat-bucket
     ports:
       - "8000:8000"
     entrypoint: /app/entrypoint.sh
@@ -93,30 +116,93 @@ services:
         condition: service_healthy
 
   
-  celery:
+  # celery:
+  #   image: server
+  #   container_name: celery
+  #   hostname: celery
+  #   environment:
+  #     - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+  #     - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+  #     - DATABASE_USER=${POSTGRES_USER}
+  #     - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+  #     - DATABASE_NAME=${POSTGRES_DB}
+  #     - DATABASE_HOST=db
+  #     - DATABASE_PORT=5432
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #     - CHANNEL_URL=redis://redis:6379/1
+  #     - CACHE_URL=redis://redis:6379/2
+  #     - USE_S3_MOCK=True
+  #     - AWS_S3_ENDPOINT_URL=http://s3mock:5000 # <--- Important!
+  #     - AWS_ACCESS_KEY_ID=fake_key
+  #     - AWS_SECRET_ACCESS_KEY=fake_secret
+  #     - AWS_S3_REGION_NAME=us-east-1
+  #     - AWS_STORAGE_BUCKET_NAME=chat-bucket
+  #   command: celery -A core worker --loglevel=info
+  #   volumes:
+  #     - ./server:/app
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     db:
+  #       condition: service_healthy
+  #     s3mock:
+  #       condition: service_healthy
+
+
+
+  # -----------------------------------------------------------------------------
+  # 5. CELERY WORKER: DEFAULT (Notifications/Lightweight)
+  # -----------------------------------------------------------------------------
+  celery_default:
+    image: server # Reuses the built image from 'server'
+    container_name: celery_default
+    hostname: celery_default
+    environment: *app-env
+    # Consumes ONLY 'default' queue
+    command: celery -A core worker --loglevel=info -Q default --hostname=default@%h --concurrency=4
+    volumes:
+      - ./server:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      s3mock:
+        condition: service_healthy
+
+  # -----------------------------------------------------------------------------
+  # 6. CELERY WORKER: MEDIA (Images, Audio, Files)
+  # -----------------------------------------------------------------------------
+  celery_media:
     image: server
-    container_name: celery
-    hostname: celery
-    environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
-      - DATABASE_USER=${POSTGRES_USER}
-      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
-      - DATABASE_NAME=${POSTGRES_DB}
-      - DATABASE_HOST=db
-      - DATABASE_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CHANNEL_URL=redis://redis:6379/1
-      - CACHE_URL=redis://redis:6379/2
-      - USE_S3_MOCK=True
-      - AWS_S3_ENDPOINT_URL=http://s3mock:5000 # <--- Important!
-      - AWS_ACCESS_KEY_ID=fake_key
-      - AWS_SECRET_ACCESS_KEY=fake_secret
-      - AWS_S3_REGION_NAME=us-east-1
-      - AWS_STORAGE_BUCKET_NAME=chat-bucket
-    command: celery -A core worker --loglevel=info
+    container_name: celery_media
+    hostname: celery_media
+    environment: *app-env
+    # Consumes image, audio, and file queues
+    command: celery -A core worker --loglevel=info -Q image_queue,audio_queue,file_queue --hostname=media@%h --concurrency=4
+    volumes:
+      - ./server:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      s3mock:
+        condition: service_healthy
+
+  # -----------------------------------------------------------------------------
+  # 7. CELERY WORKER: VIDEO (Heavy Transcoding - Isolated)
+  # -----------------------------------------------------------------------------
+  celery_video:
+    image: server
+    container_name: celery_video
+    hostname: celery_video
+    environment: *app-env
+    # Consumes ONLY 'video_queue'
+    # Concurrency is LOW (2) to prevent FFmpeg from eating all RAM/CPU
+    command: celery -A core worker --loglevel=info -Q video_queue --hostname=video@%h --concurrency=2
     volumes:
       - ./server:/app
     depends_on:
