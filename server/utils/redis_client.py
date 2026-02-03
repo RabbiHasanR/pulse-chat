@@ -1,41 +1,45 @@
 import os
 from urllib.parse import urlparse
-from typing import List, Union, Dict
-import redis.asyncio as redis
+import redis.asyncio as async_redis  # Rename for clarity
+import redis as sync_redis           # <--- ADD THIS (Standard synchronous lib)
 
-# --- 1. CONNECTION SETUP ---
-parsed = urlparse(os.getenv("CHANNEL_URL", "redis://localhost:6379"))
+# --- CONFIG ---
+redis_url = os.getenv("CHANNEL_URL", "redis://localhost:6379")
+parsed = urlparse(redis_url)
 
-redis_client = redis.Redis(
-    host=parsed.hostname,
-    port=parsed.port,
-    db=int(parsed.path.lstrip("/")) if parsed.path else 0,
+redis_host = parsed.hostname
+redis_port = parsed.port
+redis_db = int(parsed.path.lstrip("/")) if parsed.path else 0
+
+# --- 1. ASYNC CLIENT (For Views/Consumers) ---
+redis_client = async_redis.Redis(
+    host=redis_host,
+    port=redis_port,
+    db=redis_db,
     decode_responses=True
 )
 
-# --- 2. KEY GENERATORS ---
+# --- 2. SYNC CLIENT (For Celery Tasks) ---
+sync_redis_client = sync_redis.Redis(
+    host=redis_host,
+    port=redis_port,
+    db=redis_db,
+    decode_responses=True
+)
+
 class RedisKeys:
     ONLINE_USERS = "online_users"
 
     @staticmethod
-    def active_connections(user_id: Union[int, str]) -> str:
-        """
-        Set of active 'channel_names' for a user.
-        Used to track Online/Offline status.
-        """
+    def active_connections(user_id):
         return f"user:{user_id}:connections"
 
     @staticmethod
-    def viewing(user_id: Union[int, str], target_id: Union[int, str]) -> str:
-        """
-        Set of 'channel_names' where user_id is currently viewing target_id.
-        Used for Real-Time Read Receipts.
-        """
+    def viewing(user_id, target_id):
         return f"user:{user_id}:viewing:{target_id}"
 
     @staticmethod
-    def presence_audience(target_user_id: Union[int, str]) -> str:
-        """Set of users listening to target_user_id's status updates."""
+    def presence_audience(target_user_id):
         return f"user:{target_user_id}:presence_audience"
 
 # --- 3. UTILITY SERVICE ---
