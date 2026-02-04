@@ -5,7 +5,7 @@ from asgiref.sync import async_to_sync
 
 
 from .models import Conversation, ChatMessage, MediaAsset
-from .serializers import ChatMessageSerializer
+from .serializers import ChatMessageSerializer, ChatMessagePendingSerializer
 from utils.redis_client import redis_client, RedisKeys
 from utils.s3 import s3, new_object_key, AWS_BUCKET, DEFAULT_EXPIRES_DIRECT, DEFAULT_EXPIRES_PART, MAX_BATCH_COUNT, DIRECT_THRESHOLD
 
@@ -68,12 +68,13 @@ class ChatService:
         conversation.save(update_fields=['last_message_content', 'last_message_type', 'last_message_time', 'unread_counts', 'updated_at'])
 
     @staticmethod
-    def _broadcast_message(sender_id, receiver_id, message_instance):
+    def _broadcast_message(sender_id, receiver_id, message_instance, serializer_class=None):
         """
         Helper: Sends the WebSocket event to BOTH Receiver and Sender (for Multi-Device Sync).
         """
         channel_layer = get_channel_layer()
-        serialized_data = ChatMessageSerializer(message_instance).data
+        Serializer = serializer_class or ChatMessageSerializer
+        serialized_data = Serializer(message_instance).data
         
         event = {
             "type": "forward_event", 
@@ -216,7 +217,7 @@ class ChatService:
         # F. Update Conv & Broadcast
         # Note: We notify immediately so receiver sees "Sending photo..." (or the gray grid)
         ChatService._update_conversation(conversation, receiver_id, text_caption, msg_type, msg.created_at, is_viewing)
-        ChatService._broadcast_message(sender.id, receiver_id, msg)
+        ChatService._broadcast_message(sender.id, receiver_id, msg, serializer_class=ChatMessagePendingSerializer)
 
         return msg, upload_instructions
 

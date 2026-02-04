@@ -264,3 +264,59 @@ class ChatMessageSerializer(serializers.ModelSerializer):
         if request:
             return obj.sender_id == request.user.id
         return False
+    
+    
+class MediaAssetPendingSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for 'queued' assets.
+    removes 'url' and 'thumbnail_url' to prevent 404 errors on frontend.
+    """
+    class Meta:
+        model = MediaAsset
+        fields = [
+            'id', 
+            'kind', 
+            'file_name', 
+            'file_size', 
+            'processing_status' # Important: Frontend checks this to show Spinner
+        ]
+        
+        
+
+
+class ChatMessagePendingSerializer(serializers.ModelSerializer):
+    sender = UserSimpleSerializer(read_only=True)
+    media_assets = MediaAssetPendingSerializer(many=True, read_only=True)
+    is_me = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ChatMessage
+        fields = [
+            'id', 
+            'sender',          # Returns ID (Integer)
+            'content', 
+            'message_type',
+            'status', 
+            'created_at', 
+            'is_edited', 
+            'is_forwarded', 
+            'forward_source_name',
+            
+            # Reply Data
+            'reply_to',        # ID of parent
+            'reply_metadata',  # Snapshot { "sender": "Alice", "preview": "..." }
+            
+            # Attachments
+            'asset_count',     # Quick check for UI
+            'media_assets',    # Full objects with URLs
+            
+            # Helper
+            'is_me'
+        ]
+
+    def get_is_me(self, obj):
+        request = self.context.get('request')
+        if request:
+            return obj.sender_id == request.user.id
+        return False
+    
