@@ -49,7 +49,7 @@ class ChatRedisService:
     """
 
     @staticmethod
-    async def subscribe_user_to_presence(observer_id: int, target_ids: List[int]):
+    async def subscribe_user_to_presence(observer_id: int, target_ids: list[int]):
         if not target_ids: return
         pipeline = redis_client.pipeline()
         for target_id in target_ids:
@@ -59,7 +59,7 @@ class ChatRedisService:
         await pipeline.execute()
 
     @staticmethod
-    async def get_online_status_batch(user_ids: List[int]) -> Dict[int, bool]:
+    async def get_online_status_batch(user_ids: list[int]) -> dict[int, bool]:
         if not user_ids: return {}
         pipeline = redis_client.pipeline()
         for uid in user_ids:
@@ -68,7 +68,7 @@ class ChatRedisService:
         return {uid: bool(is_online) for uid, is_online in zip(user_ids, results)}
 
     @staticmethod
-    async def subscribe_and_get_presences(observer_id: int, target_ids: List[int]) -> Dict[int, bool]:
+    async def subscribe_and_get_presences(observer_id: int, target_ids: list[int]) -> dict[int, bool]:
         if not target_ids: return {}
         pipeline = redis_client.pipeline()
         for target_id in target_ids:
