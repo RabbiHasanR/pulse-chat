@@ -1,5 +1,8 @@
 import asyncio
+from datetime import timedelta
+from django.utils import timezone
 from django.db import transaction
+from django.db.models import Count, Q
 from celery import shared_task
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -539,3 +542,120 @@ def _handle_failure(asset_id, error):
         
     except Exception as e:
         print(f"Critical DB Error in Failure Handler: {e}")
+        
+        
+        
+        
+        
+        
+
+
+
+@shared_task(
+    bind=True,
+    queue='default',       # <--- USE DEFAULT QUEUE (Isolate from heavy media tasks)
+    acks_late=True,        # Ensure task isn't lost if worker crashes mid-execution
+    soft_time_limit=60,    # Should finish fast. If not, stop it.
+    time_limit=120,        # Hard kill after 2 mins
+    max_retries=3
+)
+def cleanup_stuck_assets(self):
+    """
+    Periodic Task: Finds assets stuck in 'queued' (Abandoned) or 'running' (Crashed)
+    and marks them as failed. Updates the parent Message status if necessary.
+    """
+    try:
+        now = timezone.now()
+        
+        # 1. Define Thresholds
+        # Abandoned: User got URL but never uploaded (24 hours grace period)
+        abandoned_threshold = now - timedelta(hours=24)
+        # Crashed: Worker started but died/timed out (2 hours is generous for any file)
+        crash_threshold = now - timedelta(hours=2)
+
+        # 2. Find Zombies (Stuck Assets)
+        # We assume any asset older than these limits is dead.
+        stuck_assets = MediaAsset.objects.filter(
+            Q(processing_status='queued', created_at__lte=abandoned_threshold) |
+            Q(processing_status='running', created_at__lte=crash_threshold)
+        ).select_related('message')
+
+        if not stuck_assets.exists():
+            return "No stuck assets found."
+
+        # 3. Collect Message IDs first (Need this before we update the assets)
+        message_ids = set(stuck_assets.values_list('message_id', flat=True))
+
+        print(f"🧹 Cleanup: Found {stuck_assets.count()} stuck assets across {len(message_ids)} messages.")
+
+        # 4. Mark Assets as Failed (Bulk Update)
+        # This is efficient (1 DB query)
+        count = stuck_assets.update(
+            processing_status='failed',
+            variants={'error_log': 'Cleanup: Upload timed out (Abandoned) or Worker Crashed'}
+        )
+
+        # 5. Check Consistency for Affected Messages
+        # Fetch fresh data to decide if the message is dead or partial
+        affected_messages = ChatMessage.objects.filter(id__in=message_ids).annotate(
+            valid_assets=Count('media_assets', filter=Q(media_assets__processing_status='done')),
+            failed_assets=Count('media_assets', filter=Q(media_assets__processing_status='failed'))
+        )
+
+        channel_layer = get_channel_layer()
+
+        # 6. Iterate and Notify (Safely)
+        updated_msgs = 0
+        for msg in affected_messages:
+            try:
+                # LOGIC: Is the message completely dead?
+                # Dead = No Text Content AND No Valid (Done) Assets
+                is_dead = (not msg.content) and (msg.valid_assets == 0)
+
+                if is_dead:
+                    # Mark Message as FAILED
+                    msg.status = ChatMessage.Status.FAILED
+                    msg.save(update_fields=['status'])
+                else:
+                    # Message is partially valid (e.g., has text or 1 success out of 3 images)
+                    # If it was stuck in 'pending', free it to 'sent' so the valid parts are visible
+                    if msg.status == ChatMessage.Status.PENDING:
+                        msg.status = ChatMessage.Status.SENT
+                        msg.save(update_fields=['status'])
+
+                # Notify Frontend (Update UI)
+                payload = {
+                    "type": "chat_message_update",
+                    "data": {
+                        "message_id": msg.id,
+                        "status": msg.status,           # 'failed' or 'sent'
+                        "processing_status": "failed",  # Tells UI to stop spinner
+                        "sender_id": msg.sender_id,
+                        "receiver_id": msg.receiver_id,
+                    }
+                }
+                
+                # Broadcast to Sender (so they can retry)
+                async_to_sync(channel_layer.group_send)(f"user_{msg.sender_id}", {
+                    "type": "forward_event", "payload": payload
+                })
+                
+                # Broadcast to Receiver (so they stop seeing the spinner)
+                async_to_sync(channel_layer.group_send)(f"user_{msg.receiver_id}", {
+                    "type": "forward_event", "payload": payload
+                })
+                updated_msgs += 1
+
+            except Exception as e:
+                # If notifying for ONE message fails, log it but CONTINUE the loop.
+                # Do not let one bad socket connection break the cleanup for everyone else.
+                print(f"⚠️ Failed to notify cleanup for msg {msg.id}: {e}")
+                continue
+
+        return f"Cleaned {count} assets. Updated {updated_msgs} messages."
+
+    except Exception as e:
+        # Catch Critical DB Connection Errors
+        print(f"❌ Critical Cleanup Failure: {e}")
+        # Retry logic for DB locks
+        raise self.retry(exc=e, countdown=60)

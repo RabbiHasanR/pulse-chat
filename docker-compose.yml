@@ -214,4 +214,18 @@ services:
         condition: service_healthy
     
 
-    
+
+
+
+celery_beat:
+    image: server_image
+    container_name: celery_beat
+    environment: *app-env
+    command: celery -A core beat -l info
+    volumes:
+      - ./server:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy

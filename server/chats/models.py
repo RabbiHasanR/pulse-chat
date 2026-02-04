@@ -167,6 +167,7 @@ class ChatMessage(models.Model):
         SENT      = "sent",      "Sent"
         DELIVERED = "delivered", "Delivered"
         SEEN      = "seen",      "Seen"
+        FAILED    = "failed",    "Failed"
 
     # Link to Conversation (Makes history queries efficient)
     conversation = models.ForeignKey(

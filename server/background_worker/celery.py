@@ -1,5 +1,6 @@
 from celery import Celery
 from kombu import Queue, Exchange
+from celery.schedules import crontab
 import os
 
 
@@ -23,6 +24,14 @@ app.conf.task_routes = {
     'background_worker.chats.tasks.process_image_task': {'queue': 'image_queue'},
     'background_worker.chats.tasks.process_audio_task': {'queue': 'audio_queue'},
     'background_worker.chats.tasks.process_file_task':  {'queue': 'file_queue'},
+}
+
+
+app.conf.beat_schedule = {
+    'cleanup-stuck-assets-hourly': {
+        'task': 'chats.tasks.cleanup_stuck_assets', 
+        'schedule': crontab(minute=0, hour='*'),
+    },
 }
 
 app.autodiscover_tasks()
