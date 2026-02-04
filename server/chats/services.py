@@ -236,7 +236,6 @@ class ChatService:
             )
             return {
                 "mode": "direct",
-                "object_key": object_key,
                 "put_url": put_url,
             }
         # Multipart Upload
@@ -267,7 +266,6 @@ class ChatService:
 
             return {
                 "mode": "multipart",
-                "object_key": object_key,
                 "upload_id": upload_id,
                 "part_size": cps,
                 "num_parts": cnp,

@@ -313,7 +313,6 @@ class SendMessageView(APIView):
 
     def post(self, request):
         # 1. VALIDATION LAYER
-        # We use the serializer validation, which is robust.
         ser = SendMessageInSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid data", errors=ser.errors, status=400)
@@ -321,7 +320,7 @@ class SendMessageView(APIView):
         data = ser.validated_data
         user = request.user
         receiver_id = data['receiver_id']
-        text = data.get('text', '') # Defaults to empty string
+        text = data.get('text', '') 
         reply_to_id = data.get('reply_to_id')
         attachments = data.get('attachments', [])
 
@@ -329,7 +328,6 @@ class SendMessageView(APIView):
         # SCENARIO 1: MEDIA MESSAGE (Init S3)
         # ------------------------------------
         if attachments:
-            # Atomic Transaction is handled inside Service
             msg, upload_instructions = ChatService.initialize_media_message(
                 sender=user,
                 receiver_id=receiver_id,
@@ -338,16 +336,19 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
             
-            # OPTIMIZATION: Return strict JSON structure.
-            # No heavy serialization here.
+            # RESPONSE: Minimal data needed for the UI to:
+            # 1. Replace temporary ID with real 'message_id'
+            # 2. Know where to upload files ('uploads')
+            # 3. Know the 'conversation_id' (crucial for new chats)
             return success_response(
                 message="Media initialized",
                 data={
                     "message_id": msg.id,
+                    "conversation_id": msg.conversation_id, # <--- ADDED THIS
                     "type": "media",
-                    "status": msg.status, # e.g. 'seen' or 'sent' based on Redis
+                    "status": msg.status,
                     "created_at": msg.created_at,
-                    "uploads": upload_instructions # S3 URLs
+                    "uploads": upload_instructions 
                 },
                 status=201
             )
@@ -356,7 +357,6 @@ class SendMessageView(APIView):
         # SCENARIO 2: TEXT MESSAGE
         # ------------------------------------
         else:
-            # Atomic Transaction is handled inside Service
             msg = ChatService.send_text_message(
                 sender=user,
                 receiver_id=receiver_id,
@@ -364,17 +364,15 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
 
-            # OPTIMIZATION: "Lean Response"
-            # We DO NOT serialize the full message object here.
-            # The client already has the text; it just needs the ID and Timestamp to "confirm" the bubble.
+            # RESPONSE: Minimal confirmation
             return success_response(
                 message="Message sent",
                 data={
                     "message_id": msg.id,
+                    "conversation_id": msg.conversation_id, # <--- ADDED THIS
                     "type": "text",
-                    "status": msg.status, # Frontend updates gray tick -> double tick immediately
+                    "status": msg.status,
                     "created_at": msg.created_at,
-                    # "reply_metadata": ... (Only add if your frontend STRICTLY needs it to render the confirm)
                 },
                 status=201
             )
@@ -388,37 +386,36 @@ class CompleteUpload(APIView):
     def post(self, request):
         ser = CompleteUploadIn(data=request.data)
         if not ser.is_valid():
-            return error_response(message="Invalid data", errors=ser.errors, status=400)
+            return error_response(ser.errors, status=400)
             
         d = ser.validated_data
-        object_key = d["object_key"]
-
+        
         try:
-            asset = MediaAsset.objects.select_related("message").get(
-                object_key=object_key,
-                processing_status="queued"
-            )
+            # OPTIMIZED: Lookup by ID
+            asset = MediaAsset.objects.get(id=d['asset_id'], processing_status="queued")
         except MediaAsset.DoesNotExist:
-            return error_response(message="Asset not found", status=404)
-            
+            return error_response("Asset not found or already processed", status=404)
+
+        # Multipart Logic (Only runs if needed)
         if d.get("parts") and d.get("upload_id"):
              s3.complete_multipart_upload(
                  Bucket=asset.bucket, 
-                 Key=object_key, 
+                 Key=asset.object_key, 
                  UploadId=d["upload_id"], 
                  MultipartUpload={"Parts": d["parts"]}
              )
 
+        # Task Dispatch
         if asset.kind == MediaAsset.Kind.VIDEO:
             process_video_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.IMAGE:
             process_image_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.AUDIO:
             process_audio_task.delay(asset.id)
-        elif asset.kind == MediaAsset.kind.FILE:
+        else: # Default to FILE
             process_file_task.delay(asset.id)
 
-        return success_response(message="Upload completed", status=200)
+        return success_response("Upload completed")
     
 
 class SignBatchView(APIView):

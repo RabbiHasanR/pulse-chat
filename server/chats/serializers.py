@@ -123,7 +123,8 @@ class PrepareUploadIn(serializers.Serializer):
 
 # CompleteUploadIn remains mostly the same, ensuring we identify assets correctly
 class CompleteUploadIn(serializers.Serializer):
-    object_key = serializers.CharField()
+    # object_key = serializers.CharField()
+    asset_id = serializers.IntegerField()
     upload_id = serializers.CharField(required=False)
     parts = serializers.ListField(child=serializers.DictField(), required=False)
     
