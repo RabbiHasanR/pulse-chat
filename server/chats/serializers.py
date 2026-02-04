@@ -226,7 +226,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'kind', 'url', 'thumbnail_url', 
             'width', 'height', 'duration_seconds', 
-            'file_name', 'file_size'
+            'file_name', 'file_size', 'processing_status'
         ]
 
 # --- 2. CHAT MESSAGE SERIALIZER ---

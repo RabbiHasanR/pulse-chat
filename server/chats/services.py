@@ -361,12 +361,14 @@ class ChatService:
     @transaction.atomic
     def mark_messages_as_read(reader, conversation, partner_id, latest_message_id=None):
         """
-        Marks messages as read and sends Read Receipt (Blue Tick) to the Sender (Partner).
+        Marks messages as read and sends Read Receipt.
+        Handles 'FAILED' status edge cases.
         """
         reader_str = str(reader.id)
         counts = conversation.unread_counts or {}
 
         # 1. OPTIMIZATION: If Badge is 0, DO NOTHING.
+        # This saves a DB Write on every single page load.
         if counts.get(reader_str, 0) == 0:
             return
 
@@ -380,9 +382,12 @@ class ChatService:
 
         if not cursor_id:
             # Fallback: Query the DB if we weren't given the ID
+            # CRITICAL CHANGE: Exclude FAILED messages.
             last_msg_obj = ChatMessage.objects.filter(
                 conversation=conversation,
                 sender_id=partner_id
+            ).exclude(
+                status=ChatMessage.Status.FAILED
             ).order_by('-created_at').first()
             
             if last_msg_obj:
@@ -392,14 +397,19 @@ class ChatService:
             return
 
         # 4. Bulk Update (The Range Update)
-        ChatMessage.objects.filter(
+        # This naturally skips 'FAILED' because we only filter for SENT/DELIVERED
+        updated_count = ChatMessage.objects.filter(
             conversation=conversation,
             sender_id=partner_id,
             id__lte=cursor_id,
             status__in=[ChatMessage.Status.SENT, ChatMessage.Status.DELIVERED]
         ).update(status=ChatMessage.Status.SEEN)
 
-        # 5. WebSocket Notification (O(1) Payload)
+        # Optimization: Only send WebSocket event if we actually updated something
+        if updated_count == 0:
+            return
+
+        # 5. WebSocket Notification
         channel_layer = get_channel_layer()
         event = {
             "type": "forward_event",
@@ -413,7 +423,6 @@ class ChatService:
             }
         }
         
-        # Notify the PARTNER (Sender) so their ticks turn blue
         async_to_sync(channel_layer.group_send)(
             ChatService._get_channel_group(partner_id), 
             event
