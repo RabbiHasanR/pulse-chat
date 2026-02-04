@@ -497,20 +497,49 @@ def _handle_failure(asset_id, error):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
         
-        # 2. Check Partial Success (e.g. Video playable but thumbnail failed)
+        # 2. Determine Viability (Fixing the 'partial' conflict)
+        # If it's a video and we have HLS parts, it is viewable. 
+        # We mark it 'done' so the UI renders the player, but log the error.
         hls_parts = asset.variants.get('hls_parts', {})
         is_playable = bool(hls_parts)
         
-        new_status = "partial" if is_playable else "failed"
         if is_playable:
+            new_status = "done"  # <--- Use valid DB choice
+            asset.variants['error_log'] = f"Partial Error: {str(error)}"
+            asset.variants['is_partial'] = True # Flag for UI if needed
+        else:
+            new_status = "failed"
             asset.variants['error_log'] = str(error)
 
-        # 3. Update DB
+        # 3. Update Asset (Atomic Save)
         asset.processing_status = new_status
         asset.save(update_fields=["processing_status", "variants"])
         
-        # 4. Direct WebSocket Notification (OPTIMIZED)
-        # Bypasses the Celery queue. Fast & Consistent.
+        # 4. Check Message Viability (The "Dead Message" Logic)
+        # We need to see if the message is now completely useless.
+        with transaction.atomic():
+            # Refresh message status
+            msg.refresh_from_db()
+            
+            # Count VALID assets (excluding the one we just marked failed)
+            # We look for ANY asset in this message that is 'done' or still 'processing'
+            has_valid_assets = msg.media_assets.filter(
+                Q(processing_status='done') | 
+                Q(processing_status='running') | 
+                Q(processing_status='queued')
+            ).exists()
+            
+            is_message_dead = (not msg.content) and (not has_valid_assets) and (new_status == 'failed')
+
+            if is_message_dead:
+                msg.status = 'failed'
+                msg.save(update_fields=['status'])
+            elif msg.status == 'pending':
+                # If we have partial success or text, ensure message isn't stuck in pending
+                msg.status = 'sent'
+                msg.save(update_fields=['status'])
+
+        # 5. Direct WebSocket Notification
         channel_layer = get_channel_layer()
         
         payload = {
@@ -520,7 +549,7 @@ def _handle_failure(asset_id, error):
                 "message_id": msg.id,
                 "sender_id": msg.sender_id,
                 "receiver_id": msg.receiver_id,
-                "status": msg.status, # Keep existing status (e.g. 'sent')
+                "status": msg.status,           # Now reflects 'failed' or 'sent'
                 "processing_status": new_status,
                 "stage": "failed",
                 "error": str(error),
