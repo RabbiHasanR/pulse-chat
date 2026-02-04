@@ -320,4 +320,80 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
         if request:
             return obj.sender_id == request.user.id
         return False
+
+
+
+
+
+
+class ChatMessageListSerializer(serializers.ModelSerializer):
+    """
+    Optimized for LIST Views (High Volume).
+    - Returns 'sender_id' (Integer) instead of full User object.
+    - Filters out 'failed' assets for the Receiver.
+    """
+    # 1. OPTIMIZATION: Return only the Integer ID
+    sender_id = serializers.IntegerField(read_only=True)
     
+    # 2. Attachments (Using your existing asset serializer)
+    media_assets = MediaAssetSerializer(many=True, read_only=True)
+    
+    # 3. Helper
+    is_me = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ChatMessage
+        fields = [
+            'id', 
+            'sender_id',       # <--- Efficient (Just '2', not a full JSON object)
+            'content', 
+            'message_type',
+            'status', 
+            'created_at', 
+            'is_edited', 
+            'is_forwarded', 
+            'forward_source_name',
+            
+            # Reply Data
+            'reply_to',        # Returns ID of parent
+            'reply_metadata',  # Lightweight Snapshot
+            
+            # Attachments
+            'asset_count',     
+            'media_assets',    
+            
+            # Helper
+            'is_me'
+        ]
+
+    def get_is_me(self, obj):
+        request = self.context.get('request')
+        if request:
+            return obj.sender_id == request.user.id
+        return False
+
+    def to_representation(self, instance):
+        """
+        Runtime Filtering Logic:
+        - Fetch ALL assets from DB (Prefetched).
+        - Filter OUT 'failed' assets ONLY if I am the Receiver.
+        """
+        data = super().to_representation(instance)
+        
+        # We access the 'is_me' field we just calculated
+        is_me = data.get('is_me')
+
+        # LOGIC:
+        # If I am the Sender (is_me=True): Show EVERYTHING (including failed, so I can retry).
+        # If I am the Receiver (is_me=False): Hide 'failed' (garbage/broken links).
+        if not is_me:
+            raw_assets = data.get('media_assets', [])
+            if raw_assets:
+                # Filter the list in Python (Fast)
+                filtered_assets = [
+                    asset for asset in raw_assets 
+                    if asset.get('processing_status') != 'failed'
+                ]
+                data['media_assets'] = filtered_assets
+
+        return data

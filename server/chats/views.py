@@ -12,10 +12,10 @@ from .models import ChatMessage, MediaAsset
 from .serializers import (
     CompleteUploadIn,
     ChatListSerializer,
-    ChatMessageSerializer,
     SendMessageInSerializer,
     SignBatchInSerializer,
-    ForwardMessageInSerializer
+    ForwardMessageInSerializer,
+    ChatMessageListSerializer
 )
 from background_worker.chats.tasks import (
     notify_message_event,
@@ -584,5 +584,5 @@ class ChatMessageListView(APIView):
                 latest_message_id=latest_msg_id
             )
         
-        serializer = ChatMessageSerializer(page, many=True, context={'request': request})
+        serializer = ChatMessageListSerializer(page, many=True, context={'request': request})
         return paginator.get_paginated_response(serializer.data)
