@@ -1,4 +1,5 @@
 import asyncio
+from django.db import transaction
 from celery import shared_task
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -174,54 +175,108 @@ def mark_delivered_and_notify_senders(user_id):
 # ----------------------------------------------------------------------------
 def _finalize_asset(asset_id, result_data):
     """
-    Updates DB state to 'done' and sends the final success notification.
+    Production-Ready Finalizer:
+    1. Updates MediaAsset metadata.
+    2. Checks Real-time Status (Seen/Delivered) via Redis.
+    3. Performs ONE atomic DB update for both Asset and Message.
+    4. Pushes WebSocket event DIRECTLY (No extra task).
     """
     try:
+        # 1. Fetch Data (Single Query)
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
+        receiver_id = msg.receiver_id
+        sender_id = msg.sender_id
 
-        # 1. Update Asset Metadata
+        # 2. Update Asset Metadata (InMemory)
         if result_data:
             asset.object_key = result_data.get("object_key", asset.object_key)
             if "width" in result_data: asset.width = result_data["width"]
             if "height" in result_data: asset.height = result_data["height"]
             if "file_size" in result_data: asset.file_size = result_data["file_size"]
-            
             existing_vars = asset.variants or {}
             existing_vars.update(result_data.get("variants", {}))
             asset.variants = existing_vars
-
+        
         asset.processing_status = "done"
         asset.processing_progress = 100.0
-        asset.save()
 
-        # 2. Update Message Status (Atomic Update)
-        # Only update if it's still pending/sent to avoid reverting 'seen' status
-        if msg.status == 'pending':
-            ChatMessage.objects.filter(id=msg.id).update(status='sent', updated_at=msg.updated_at)
+        # 3. Determine New Message Status (Redis Check)
+        # We assume the message starts as SENT/DELIVERED. 
+        # We only want to upgrade it to SEEN if the user is looking RIGHT NOW.
+        new_status = msg.status # Default: Keep existing status
+        
+        # Check if Receiver is Viewing this chat
+        viewing_key = RedisKeys.viewing(receiver_id, sender_id)
+        is_viewing = sync_redis_client.scard(viewing_key) > 0
+        
+        if is_viewing:
+            new_status = 'seen'
+        elif msg.status == 'sent': 
+            # If it was just 'sent', check if they are at least online now to mark 'delivered'
+            is_online = sync_redis_client.sismember(RedisKeys.ONLINE_USERS, receiver_id)
+            if is_online:
+                new_status = 'delivered'
 
-        # 3. Final Notification (Use Celery Queue for reliability)
+        # 4. ATOMIC COMMIT (The Scalability Win)
+        with transaction.atomic():
+            asset.save()
+            # Only update message status if it changed (optimization)
+            if new_status != msg.status:
+                msg.status = new_status
+                msg.save(update_fields=['status', 'updated_at'])
+
+        # 5. Direct WebSocket Broadcast (Fastest)
+        # No need to queue another Celery task. Redis Publish is fast (<2ms).
+        channel_layer = get_channel_layer()
+        
         payload = {
             "type": "chat_message_update",
             "success": True,
             "data": {
                 "message_id": msg.id,
-                "sender_id": msg.sender_id,
-                "receiver_id": msg.receiver_id,
-                "status": "sent",
+                "sender_id": sender_id,
+                "receiver_id": receiver_id,
+                "status": new_status, # <--- Sends the LATEST status
                 "processing_status": "done",
-                "stage": "done",
-                "progress": 100.0,
                 "media_url": asset.url,
                 "thumbnail_url": asset.thumbnail_url,
                 "width": asset.width,
                 "height": asset.height,
             }
         }
-        notify_message_event.delay(payload)
-    
+
+        # Send to Receiver
+        async_to_sync(channel_layer.group_send)(f"user_{receiver_id}", {
+            "type": "forward_event", 
+            "payload": payload
+        })
+        
+        # Send to Sender (Sync other devices)
+        async_to_sync(channel_layer.group_send)(f"user_{sender_id}", {
+            "type": "forward_event", 
+            "payload": payload
+        })
+
+        # 6. Optional: If 'seen', send a separate Read Receipt event
+        # This ensures the Sender's UI updates the ticks specifically
+        if new_status == 'seen' and msg.status != 'seen':
+             read_receipt = {
+                "type": "chat_read_receipt",
+                "data": {
+                    "message_id": msg.id,
+                    "reader_id": receiver_id,
+                    "last_read_id": msg.id
+                }
+            }
+             async_to_sync(channel_layer.group_send)(f"user_{sender_id}", {
+                "type": "forward_event", 
+                "payload": read_receipt
+            })
+
     except Exception as e:
         print(f"Finalize Failed for {asset_id}: {e}")
+        # Log error to Sentry/CloudWatch
 
 # ----------------------------------------------------------------------------
 # 3. MEDIA TASKS (Optimized)
@@ -435,8 +490,11 @@ def process_file_task(self, asset_id):
 def _handle_failure(asset_id, error):
     print(f"Processing Failed for Asset {asset_id}: {error}")
     try:
+        # 1. Fetch Asset & Message
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
+        msg = asset.message
         
+        # 2. Check Partial Success (e.g. Video playable but thumbnail failed)
         hls_parts = asset.variants.get('hls_parts', {})
         is_playable = bool(hls_parts)
         
@@ -444,26 +502,40 @@ def _handle_failure(asset_id, error):
         if is_playable:
             asset.variants['error_log'] = str(error)
 
+        # 3. Update DB
         asset.processing_status = new_status
         asset.save(update_fields=["processing_status", "variants"])
         
-        msg = asset.message
+        # 4. Direct WebSocket Notification (OPTIMIZED)
+        # Bypasses the Celery queue. Fast & Consistent.
+        channel_layer = get_channel_layer()
         
         payload = {
             "type": "chat_message_update",
             "success": False,
             "data": {
                 "message_id": msg.id,
-                "status": "sent",
+                "sender_id": msg.sender_id,
+                "receiver_id": msg.receiver_id,
+                "status": msg.status, # Keep existing status (e.g. 'sent')
                 "processing_status": new_status,
                 "stage": "failed",
                 "error": str(error),
-                "sender_id": msg.sender_id,
-                "receiver_id": msg.receiver_id,
                 "media_url": asset.url if is_playable else None
             }
         }
-        notify_message_event.delay(payload)
+
+        # Send to Receiver
+        async_to_sync(channel_layer.group_send)(f"user_{msg.receiver_id}", {
+            "type": "forward_event", 
+            "payload": payload
+        })
+        
+        # Send to Sender
+        async_to_sync(channel_layer.group_send)(f"user_{msg.sender_id}", {
+            "type": "forward_event", 
+            "payload": payload
+        })
         
     except Exception as e:
         print(f"Critical DB Error in Failure Handler: {e}")

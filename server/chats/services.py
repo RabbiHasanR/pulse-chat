@@ -6,7 +6,7 @@ from asgiref.sync import async_to_sync
 
 from .models import Conversation, ChatMessage, MediaAsset
 from .serializers import ChatMessageSerializer, ChatMessagePendingSerializer
-from utils.redis_client import redis_client, RedisKeys
+from utils.redis_client import RedisKeys, sync_redis_client
 from utils.s3 import s3, new_object_key, AWS_BUCKET, DEFAULT_EXPIRES_DIRECT, DEFAULT_EXPIRES_PART, MAX_BATCH_COUNT, DIRECT_THRESHOLD
 
 class ChatService:
@@ -18,25 +18,24 @@ class ChatService:
     def _determine_initial_status(sender_id, receiver_id):
         """
         Helper: Checks Redis to see if the user is Viewing or Online.
-        Returns: (status, is_viewing)
+        Uses SYNCHRONOUS Redis client for performance in Views.
         """
         # 1. Check Viewing (Blue Ticks)
         viewing_key = RedisKeys.viewing(receiver_id, sender_id)
-        # async_to_sync required because we are in a synchronous context
-        is_viewing = async_to_sync(redis_client.scard)(viewing_key) > 0
+        # Direct call - No async_to_sync needed
+        is_viewing = sync_redis_client.scard(viewing_key) > 0
 
-        # 2. Check Online (Double Ticks)
-        is_online = False
-        if not is_viewing:
-            is_online = async_to_sync(redis_client.sismember)(RedisKeys.ONLINE_USERS, receiver_id)
-
-        # 3. Determine Status
         if is_viewing:
             return ChatMessage.Status.SEEN, True
-        elif is_online:
+
+        # 2. Check Online (Double Ticks)
+        is_online = sync_redis_client.sismember(RedisKeys.ONLINE_USERS, receiver_id)
+        
+        if is_online:
             return ChatMessage.Status.DELIVERED, False
-        else:
-            return ChatMessage.Status.SENT, False
+        
+        # 3. Default (Single Tick)
+        return ChatMessage.Status.SENT, False
 
     @staticmethod
     def _update_conversation(conversation, receiver_id, content, msg_type, msg_time, is_viewing):
