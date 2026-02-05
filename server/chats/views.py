@@ -544,38 +544,32 @@ class ChatMessageListView(APIView):
         user_id = request.user.id
         p1, p2 = sorted([user_id, partner_id])
         
-        # 1. Conversation Lookup (Cacheable ideally, but DB is fine for now)
+
         try:
             conversation = Conversation.objects.get(participant_1_id=p1, participant_2_id=p2)
         except Conversation.DoesNotExist:
             return self.pagination_class().get_paginated_response([])
 
-        # 2. OPTIMIZED QUERYSET
-        # Logic: Show ALL my messages. Show Partner's messages ONLY if they didn't 'FAIL'.
+
         queryset = ChatMessage.objects.filter(
             conversation=conversation
         ).exclude(
-            # Exclude messages sent by Partner that are FAILED
             sender_id=partner_id, 
             status=ChatMessage.Status.FAILED
         ).select_related('reply_to').prefetch_related('media_assets').order_by('-created_at')
 
-        # 3. Pagination
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(queryset, request, view=self)
 
-        # 4. Determine Read Receipt Target
         latest_msg_id = None
         is_first_page = request.query_params.get('cursor') is None
         
         if is_first_page and page:
             top_msg = page[0]
-            # Only mark as read if the top message is from the PARTNER
-            # (The queryset filter already guarantees this isn't FAILED)
+
             if top_msg.sender_id == partner_id:
                 latest_msg_id = top_msg.id
 
-        # 5. Trigger Mark as Read (Async/Background preferred, but Sync is okay here)
         if latest_msg_id:
             ChatService.mark_messages_as_read(
                 request.user, 

@@ -13,8 +13,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from socket import timeout as SocketTimeout
 from celery.exceptions import SoftTimeLimitExceeded, MaxRetriesExceededError
 
-# --- IMPORTS FROM YOUR REDIS MODULE ---
-# We use sync_redis_client for Celery to avoid Event Loop crashes
 from utils.redis_client import sync_redis_client, RedisKeys 
 
 from chats.models import ChatMessage, MediaAsset
