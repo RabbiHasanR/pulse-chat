@@ -2,7 +2,8 @@ import io
 import uuid
 import logging
 import magic
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
+from botocore.exceptions import ClientError
 from utils.aws import s3
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,12 @@ class ImageProcessor:
             # 2. DOWNLOAD TO RAM
             # Safe because we capped size at 25MB
             raw_stream = io.BytesIO()
-            s3.download_fileobj(self.bucket, self.original_key, raw_stream)
+            try:
+                s3.download_fileobj(self.bucket, self.original_key, raw_stream)
+            except ClientError as e:
+                # Handle race condition where user deletes file mid-process
+                raise ValueError(f"Failed to download asset: {str(e)}")
+            
             raw_stream.seek(0)
 
             # 3. OPEN & DEEP VALIDATION
@@ -42,6 +48,9 @@ class ImageProcessor:
                 raw_stream.seek(0)
                 img = Image.open(raw_stream)
                 img.load()
+            except UnidentifiedImageError:
+                self._delete_original()
+                raise ValueError("Security Alert: Pillow cannot identify image file")
             except Exception as e:
                 self._delete_original()
                 raise ValueError(f"Corrupt or unsafe image: {e}")
@@ -104,8 +113,11 @@ class ImageProcessor:
             # Step A: Check File Size from S3 Metadata first (Zero Cost)
             head = s3.head_object(Bucket=self.bucket, Key=self.original_key)
             file_size_bytes = head['ContentLength']
+            
+            if file_size_bytes == 0:
+                raise ValueError("File is empty (0 bytes).")
+            
             file_size_mb = file_size_bytes / (1024 * 1024)
-
             if file_size_mb > MAX_FILE_SIZE_MB:
                 # Reject huge files. User should send them as 'Document' type.
                 raise ValueError(f"Image too large ({file_size_mb:.1f}MB). Limit is {MAX_FILE_SIZE_MB}MB.")
@@ -127,6 +139,12 @@ class ImageProcessor:
             if mime not in allowed:
                 raise ValueError(f"Security Alert: Invalid image mime-type '{mime}'")
                 
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == "404":
+                raise ValueError("Asset not found in S3 (Upload may have failed).")
+            else:
+                raise ValueError(f"S3 Validation Error: {error_code}")
         except Exception as e:
             raise ValueError(f"Remote Validation Error: {str(e)}")
 
