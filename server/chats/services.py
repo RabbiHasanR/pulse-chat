@@ -1,5 +1,6 @@
 from django.db import transaction
-from django.db.models import F
+from django.utils import timezone
+from django.db.models import F, Q, Prefetch
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 
@@ -275,86 +276,182 @@ class ChatService:
     
     
     @staticmethod
+    @transaction.atomic
     def forward_message_batch(sender, original_message_id, receiver_ids, new_text=None):
         """
-        Forwards a message to multiple users efficiently.
+        Optimized Forwarding: Uses Bulk Operations to achieve O(1) DB complexity.
+        Reduces 4 queries per user -> ~5 queries total for the entire batch.
         """
-        # 1. Fetch Original Message (Efficiently with assets and sender)
+        # --- STEP 1: CLEAN INPUT (O(1) OPTIMIZATION) ---
+        # Use set logic to deduplicate and remove sender efficiently
+        receiver_set = set(receiver_ids)
+        receiver_set.discard(sender.id)
+        receiver_ids = list(receiver_set)
+
+        if not receiver_ids:
+            return 0
+
+        # --- STEP 2: FETCH CONTEXT (With Filtered Assets) ---
         try:
-            original_msg = ChatMessage.objects.select_related('sender').prefetch_related('media_assets').get(id=original_message_id)
+            # OPTIMIZATION: Use select_related and prefetch_related with filtering
+            # We ONLY fetch 'done' assets. If an image failed, we don't forward it.
+            original_msg = ChatMessage.objects.select_related('sender').prefetch_related(
+                Prefetch(
+                    'media_assets', 
+                    queryset=MediaAsset.objects.filter(processing_status='done')
+                )
+            ).get(id=original_message_id)
         except ChatMessage.DoesNotExist:
             return 0
 
-        # 2. Determine Forward Metadata
-        source_name = original_msg.forward_source_name or original_msg.sender.full_name
+        # --- STEP 3: BULK CONVERSATION FETCH/CREATE ---
+        # Logic: We need a conversation object for every receiver.
         
-        # 3. Determine Content (Caption Logic)
+        # A. Find Existing Conversations (One Query)
+        existing_convs = Conversation.objects.filter(
+            Q(participant_1_id=sender.id, participant_2_id__in=receiver_ids) |
+            Q(participant_1_id__in=receiver_ids, participant_2_id=sender.id)
+        )
+
+        # Map: receiver_id -> Conversation Object
+        conv_map = {} 
+        for c in existing_convs:
+            other_id = c.participant_2_id if c.participant_1_id == sender.id else c.participant_1_id
+            conv_map[other_id] = c
+
+        # B. Identify & Create Missing Conversations
+        new_convs = []
+        missing_ids = [rid for rid in receiver_ids if rid not in conv_map]
+        
+        for rid in missing_ids:
+            p1, p2 = sorted([sender.id, rid])
+            new_convs.append(Conversation(
+                participant_1_id=p1, 
+                participant_2_id=p2,
+                unread_counts={str(p1): 0, str(p2): 0}
+            ))
+
+        if new_convs:
+            # Bulk Create returns objects with IDs populated (Postgres/Django 4+)
+            created_convs = Conversation.objects.bulk_create(new_convs)
+            for c in created_convs:
+                other_id = c.participant_2_id if c.participant_1_id == sender.id else c.participant_1_id
+                conv_map[other_id] = c
+
+        # --- STEP 4: PREPARE MESSAGES (IN MEMORY) ---
+        source_name = original_msg.forward_source_name or original_msg.sender.full_name
         final_content = new_text if new_text is not None else original_msg.content
         msg_type = original_msg.message_type
         
-        # 4. Process Each Receiver
-        count = 0
-        with transaction.atomic():
-            for receiver_id in receiver_ids:
-                if receiver_id == sender.id: 
-                    continue # Skip self-forwarding
+        # Recalculate asset count based on the FILTERED assets (Step 2)
+        valid_assets_list = list(original_msg.media_assets.all())
+        asset_count = len(valid_assets_list)
+        now = timezone.now()
 
-                # A. Setup Conversation
-                p1, p2 = sorted([sender.id, receiver_id])
-                conversation, _ = Conversation.objects.select_for_update().get_or_create(
-                    participant_1_id=p1, participant_2_id=p2,
-                    defaults={'unread_counts': {str(p1): 0, str(p2): 0}}
-                )
+        messages_to_create = []
+        # Store metadata to avoid re-calculating during conversation update
+        receiver_metadata = {} 
 
-                # B. Check Status (Reuse the Redis Logic!)
-                status, is_viewing = ChatService._determine_initial_status(sender.id, receiver_id)
+        for rid in receiver_ids:
+            status, is_viewing = ChatService._determine_initial_status(sender.id, rid)
+            receiver_metadata[rid] = {'status': status, 'is_viewing': is_viewing}
+            
+            messages_to_create.append(ChatMessage(
+                conversation=conv_map[rid],
+                sender=sender,
+                receiver_id=rid,
+                content=final_content,
+                message_type=msg_type,
+                status=status,
+                is_forwarded=True,
+                forward_source_name=source_name,
+                asset_count=asset_count,
+                created_at=now,
+                updated_at=now
+            ))
 
-                # C. Create The New Message
-                new_msg = ChatMessage.objects.create(
-                    conversation=conversation,
-                    sender=sender,
-                    receiver_id=receiver_id,
-                    content=final_content,
-                    message_type=msg_type,
-                    status=status,
-                    # Forwarding Metadata
-                    is_forwarded=True,
-                    forward_source_name=source_name,
-                    # Optimization: Copy the asset count
-                    asset_count=original_msg.asset_count
-                )
+        # --- STEP 5: BULK INSERT MESSAGES ---
+        # Executes 1 SQL Query for N messages
+        created_msgs = ChatMessage.objects.bulk_create(messages_to_create)
 
-                # D. Clone Assets (The "Smart Copy")
-                if original_msg.asset_count > 0:
-                    new_assets = []
-                    for old_asset in original_msg.media_assets.all():
-                        new_assets.append(MediaAsset(
-                            message=new_msg,
-                            bucket=old_asset.bucket,
-                            object_key=old_asset.object_key, # <--- REUSE KEY
-                            kind=old_asset.kind,
-                            content_type=old_asset.content_type,
-                            file_name=old_asset.file_name,
-                            file_size=old_asset.file_size,
-                            width=old_asset.width,
-                            height=old_asset.height,
-                            duration_seconds=old_asset.duration_seconds,
-                            variants=old_asset.variants, # Reuse thumbnails/variants
-                            processing_status="done" # It is already processed!
-                        ))
-                    
-                    if new_assets:
-                        MediaAsset.objects.bulk_create(new_assets)
+        # --- STEP 6: BULK CLONE ASSETS (Optimized) ---
+        if asset_count > 0:
+            # 1. Extract Asset Data ONCE (Avoids repeated object attribute lookups)
+            # We rely on the Prefetch from Step 2 so this hits RAM, not DB.
+            asset_templates = [
+                {
+                    'bucket': asset.bucket,
+                    'object_key': asset.object_key, # ZERO-COPY: Reuse existing S3 file
+                    'kind': asset.kind,
+                    'content_type': asset.content_type,
+                    'file_name': asset.file_name,
+                    'file_size': asset.file_size,
+                    'width': asset.width,
+                    'height': asset.height,
+                    'duration_seconds': asset.duration_seconds,
+                    'variants': asset.variants,
+                    'processing_status': "done" # Force status to done
+                }
+                for asset in valid_assets_list
+            ]
 
-                # E. Update Conversation & Broadcast
-                ChatService._update_conversation(
-                    conversation, receiver_id, final_content, msg_type, new_msg.created_at, is_viewing
-                )
-                ChatService._broadcast_message(sender.id, receiver_id, new_msg)
+            # 2. Generate New Objects via List Comprehension (Faster than .append)
+            # This creates the cross-product (N Messages * M Assets) instantly
+            new_assets = [
+                MediaAsset(message=msg, **template)
+                for msg in created_msgs
+                for template in asset_templates
+            ]
+            
+            # 3. Bulk Insert (1 SQL Query)
+            if new_assets:
+                MediaAsset.objects.bulk_create(new_assets)
+
+        # --- STEP 7: BULK UPDATE CONVERSATIONS ---
+        # We need to update 'last_message', 'updated_at', and increment 'unread_counts'
+        convs_to_update = []
+        
+        # Set keeps track of conversations we've already touched in this batch
+        processed_conv_ids = set()
+
+        for msg in created_msgs:
+            conv = conv_map[msg.receiver_id]
+            if conv.id in processed_conv_ids:
+                continue
                 
-                count += 1
+            meta = receiver_metadata[msg.receiver_id]
+            
+            # Update pointers
+            conv.last_message = msg
+            conv.updated_at = msg.created_at
+            
+            # Update Badge Count (JSON Logic)
+            if not meta['is_viewing']:
+                r_str = str(msg.receiver_id)
+                current_counts = conv.unread_counts or {}
+                if not isinstance(current_counts, dict):
+                    current_counts = {}
+                
+                new_count = current_counts.get(r_str, 0) + 1
+                current_counts[r_str] = new_count
+                conv.unread_counts = current_counts
+            
+            convs_to_update.append(conv)
+            processed_conv_ids.add(conv.id)
 
-        return count
+        # Executes 1 SQL Query to update N rows
+        if convs_to_update:
+            Conversation.objects.bulk_update(
+                convs_to_update, 
+                fields=['last_message', 'updated_at', 'unread_counts']
+            )
+
+        # --- STEP 8: NOTIFICATIONS ---
+        # Broadcast via WebSockets (Fast, non-blocking for DB)
+        for msg in created_msgs:
+            ChatService._broadcast_message(sender.id, msg.receiver_id, msg)
+
+        return len(created_msgs)
     
     
     @staticmethod
