@@ -37,3 +37,11 @@ server/**/__pycache__/
 server/**/*.pyc
 server/**/*.pyo
 server/**/*.pyd
+
+
+
+# Celery Beat Schedule
+server/celerybeat-schedule
+server/celerybeat-schedule.db
+server/celerybeat-schedule-shm
+server/celerybeat-schedule-wal
