@@ -992,18 +992,22 @@ class UserSocketConsumer(AsyncWebsocketConsumer):
             mark_delivered_and_notify_senders.delay(self.user.id)
 
     async def disconnect(self, close_code):
-        if not getattr(self, "user", None): return
+        # 1. Safety Check: If user never authenticated, do nothing
+        if not getattr(self, "user", None) or self.user.is_anonymous:
+            return
 
-        # A. Leave Group
-        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        # 2. Leave Group (Safely)
+        # Only try to leave if we actually joined a group
+        room_group = getattr(self, "room_group_name", None)
+        if room_group:
+            await self.channel_layer.group_discard(room_group, self.channel_name)
 
-        # B. Cleanup "Viewing" Status (Read Receipts)
-        if self.current_viewing_id:
+        # 3. Cleanup "Viewing" Status (Read Receipts)
+        if getattr(self, "current_viewing_id", None):
             view_key = RedisKeys.viewing(self.user.id, self.current_viewing_id)
-            # Remove THIS specific socket from the viewing list
             await redis_client.srem(view_key, self.channel_name)
 
-        # C. Cleanup Online Status
+        # 4. Cleanup Online Status
         connections_key = RedisKeys.active_connections(self.user.id)
         await redis_client.srem(connections_key, self.channel_name)
         
