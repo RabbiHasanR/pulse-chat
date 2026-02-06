@@ -397,3 +397,20 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
                 data['media_assets'] = filtered_assets
 
         return data
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    

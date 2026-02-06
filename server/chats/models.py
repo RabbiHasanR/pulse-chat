@@ -229,7 +229,7 @@ class MediaAsset(models.Model):
     
     # S3 / Storage Info
     bucket = models.CharField(max_length=255)
-    object_key = models.CharField(max_length=1024, unique=True, db_index=True)
+    object_key = models.CharField(max_length=1024, db_index=True)
     
     kind = models.CharField(max_length=10, choices=Kind.choices)
     content_type = models.CharField(max_length=255, blank=True, null=True)
