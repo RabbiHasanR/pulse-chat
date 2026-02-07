@@ -1,7 +1,5 @@
-import math
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from django.db import transaction
 from django.db.models import Q, Case, When, F
 
 from asgiref.sync import async_to_sync
@@ -305,14 +303,9 @@ User = get_user_model()
     
 
 class SendMessageView(APIView):
-    """
-    Unified Endpoint for Sending Messages.
-    Optimized for High Throughput (Low Latency).
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # 1. VALIDATION LAYER
         ser = SendMessageInSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid data", errors=ser.errors, status=400)
@@ -324,9 +317,6 @@ class SendMessageView(APIView):
         reply_to_id = data.get('reply_to_id')
         attachments = data.get('attachments', [])
 
-        # ------------------------------------
-        # SCENARIO 1: MEDIA MESSAGE (Init S3)
-        # ------------------------------------
         if attachments:
             msg, upload_instructions = ChatService.initialize_media_message(
                 sender=user,
@@ -336,15 +326,11 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
             
-            # RESPONSE: Minimal data needed for the UI to:
-            # 1. Replace temporary ID with real 'message_id'
-            # 2. Know where to upload files ('uploads')
-            # 3. Know the 'conversation_id' (crucial for new chats)
             return success_response(
                 message="Media initialized",
                 data={
                     "message_id": msg.id,
-                    "conversation_id": msg.conversation_id, # <--- ADDED THIS
+                    "conversation_id": msg.conversation_id,
                     "type": "media",
                     "status": msg.status,
                     "created_at": msg.created_at,
@@ -353,9 +339,6 @@ class SendMessageView(APIView):
                 status=201
             )
 
-        # ------------------------------------
-        # SCENARIO 2: TEXT MESSAGE
-        # ------------------------------------
         else:
             msg = ChatService.send_text_message(
                 sender=user,
@@ -364,12 +347,12 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
 
-            # RESPONSE: Minimal confirmation
+
             return success_response(
                 message="Message sent",
                 data={
                     "message_id": msg.id,
-                    "conversation_id": msg.conversation_id, # <--- ADDED THIS
+                    "conversation_id": msg.conversation_id,
                     "type": "text",
                     "status": msg.status,
                     "created_at": msg.created_at,
@@ -391,12 +374,10 @@ class CompleteUpload(APIView):
         d = ser.validated_data
         
         try:
-            # OPTIMIZED: Lookup by ID
             asset = MediaAsset.objects.get(id=d['asset_id'], processing_status="queued")
         except MediaAsset.DoesNotExist:
             return error_response("Asset not found or already processed", status=404)
 
-        # Multipart Logic (Only runs if needed)
         if d.get("parts") and d.get("upload_id"):
              s3.complete_multipart_upload(
                  Bucket=asset.bucket, 
@@ -405,14 +386,13 @@ class CompleteUpload(APIView):
                  MultipartUpload={"Parts": d["parts"]}
              )
 
-        # Task Dispatch
         if asset.kind == MediaAsset.Kind.VIDEO:
             process_video_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.IMAGE:
             process_image_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.AUDIO:
             process_audio_task.delay(asset.id)
-        else: # Default to FILE
+        else:
             process_file_task.delay(asset.id)
 
         return success_response("Upload completed")

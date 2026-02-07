@@ -37,6 +37,32 @@ class ChatService:
         
         # 3. Default (Single Tick)
         return ChatMessage.Status.SENT, False
+    
+    
+    @staticmethod
+    def _generate_preview_text(content, msg_type):
+        """
+        Helper: Generates the short preview string for the Conversation list.
+        """
+        preview = content
+        if msg_type != ChatMessage.MsgType.TEXT:
+            # Emoji Prefix Logic
+            prefix = ""
+            if msg_type == ChatMessage.MsgType.IMAGE: prefix = "📷 "
+            elif msg_type == ChatMessage.MsgType.VIDEO: prefix = "🎥 "
+            elif msg_type == ChatMessage.MsgType.AUDIO: prefix = "🎤 "
+            elif msg_type == ChatMessage.MsgType.FILE: prefix = "📁 "
+            elif msg_type == ChatMessage.MsgType.ALBUM: prefix = "🖼️ "
+
+            if not content:
+                # No Caption -> "📷 Image"
+                label = msg_type.capitalize() if msg_type != ChatMessage.MsgType.ALBUM else "Album"
+                preview = f"{prefix}{label}"
+            else:
+                # Caption exists -> "📷 Check this out"
+                preview = f"{prefix}{content}"
+        
+        return preview
 
     @staticmethod
     def _update_conversation(conversation, receiver_id, content, msg_type, msg_time, is_viewing):
@@ -50,21 +76,14 @@ class ChatService:
         if not is_viewing:
             current_counts[receiver_str] = current_counts.get(receiver_str, 0) + 1
         
-        # Set Last Message Preview
-        preview_text = content
-        if msg_type != ChatMessage.MsgType.TEXT:
-            if not content: # If no caption
-                if msg_type == ChatMessage.MsgType.IMAGE: preview_text = "📷 Image"
-                elif msg_type == ChatMessage.MsgType.VIDEO: preview_text = "🎥 Video"
-                elif msg_type == ChatMessage.MsgType.AUDIO: preview_text = "🎤 Audio"
-                else: preview_text = "📁 File"
-            else:
-                 preview_text = f"📷 {content}" if msg_type == ChatMessage.MsgType.IMAGE else content
+        # Generate Preview
+        preview_text = ChatService._generate_preview_text(content, msg_type)
 
         conversation.last_message_content = preview_text
         conversation.last_message_type = msg_type
         conversation.last_message_time = msg_time
         conversation.unread_counts = current_counts
+        
         conversation.save(update_fields=['last_message_content', 'last_message_type', 'last_message_time', 'unread_counts', 'updated_at'])
 
     @staticmethod
@@ -280,10 +299,8 @@ class ChatService:
     def forward_message_batch(sender, original_message_id, receiver_ids, new_text=None):
         """
         Optimized Forwarding: Uses Bulk Operations to achieve O(1) DB complexity.
-        Reduces 4 queries per user -> ~5 queries total for the entire batch.
         """
         # --- STEP 1: CLEAN INPUT (O(1) OPTIMIZATION) ---
-        # Use set logic to deduplicate and remove sender efficiently
         receiver_set = set(receiver_ids)
         receiver_set.discard(sender.id)
         receiver_ids = list(receiver_set)
@@ -293,8 +310,6 @@ class ChatService:
 
         # --- STEP 2: FETCH CONTEXT (With Filtered Assets) ---
         try:
-            # OPTIMIZATION: Use select_related and prefetch_related with filtering
-            # We ONLY fetch 'done' assets. If an image failed, we don't forward it.
             original_msg = ChatMessage.objects.select_related('sender').prefetch_related(
                 Prefetch(
                     'media_assets', 
@@ -305,21 +320,16 @@ class ChatService:
             return 0
 
         # --- STEP 3: BULK CONVERSATION FETCH/CREATE ---
-        # Logic: We need a conversation object for every receiver.
-        
-        # A. Find Existing Conversations (One Query)
         existing_convs = Conversation.objects.filter(
             Q(participant_1_id=sender.id, participant_2_id__in=receiver_ids) |
             Q(participant_1_id__in=receiver_ids, participant_2_id=sender.id)
         )
 
-        # Map: receiver_id -> Conversation Object
         conv_map = {} 
         for c in existing_convs:
             other_id = c.participant_2_id if c.participant_1_id == sender.id else c.participant_1_id
             conv_map[other_id] = c
 
-        # B. Identify & Create Missing Conversations
         new_convs = []
         missing_ids = [rid for rid in receiver_ids if rid not in conv_map]
         
@@ -332,7 +342,6 @@ class ChatService:
             ))
 
         if new_convs:
-            # Bulk Create returns objects with IDs populated (Postgres/Django 4+)
             created_convs = Conversation.objects.bulk_create(new_convs)
             for c in created_convs:
                 other_id = c.participant_2_id if c.participant_1_id == sender.id else c.participant_1_id
@@ -343,13 +352,11 @@ class ChatService:
         final_content = new_text if new_text is not None else original_msg.content
         msg_type = original_msg.message_type
         
-        # Recalculate asset count based on the FILTERED assets (Step 2)
         valid_assets_list = list(original_msg.media_assets.all())
         asset_count = len(valid_assets_list)
         now = timezone.now()
 
         messages_to_create = []
-        # Store metadata to avoid re-calculating during conversation update
         receiver_metadata = {} 
 
         for rid in receiver_ids:
@@ -371,13 +378,10 @@ class ChatService:
             ))
 
         # --- STEP 5: BULK INSERT MESSAGES ---
-        # Executes 1 SQL Query for N messages
         created_msgs = ChatMessage.objects.bulk_create(messages_to_create)
 
         # --- STEP 6: BULK CLONE ASSETS (Optimized) ---
         if asset_count > 0:
-            # 1. Extract Asset Data ONCE (Avoids repeated object attribute lookups)
-            # We rely on the Prefetch from Step 2 so this hits RAM, not DB.
             asset_templates = [
                 {
                     'bucket': asset.bucket,
@@ -390,28 +394,22 @@ class ChatService:
                     'height': asset.height,
                     'duration_seconds': asset.duration_seconds,
                     'variants': asset.variants,
-                    'processing_status': "done" # Force status to done
+                    'processing_status': "done" 
                 }
                 for asset in valid_assets_list
             ]
 
-            # 2. Generate New Objects via List Comprehension (Faster than .append)
-            # This creates the cross-product (N Messages * M Assets) instantly
             new_assets = [
                 MediaAsset(message=msg, **template)
                 for msg in created_msgs
                 for template in asset_templates
             ]
             
-            # 3. Bulk Insert (1 SQL Query)
             if new_assets:
                 MediaAsset.objects.bulk_create(new_assets)
 
-        # --- STEP 7: BULK UPDATE CONVERSATIONS ---
-        # We need to update 'last_message', 'updated_at', and increment 'unread_counts'
+        # --- STEP 7: BULK UPDATE CONVERSATIONS (FIXED) ---
         convs_to_update = []
-        
-        # Set keeps track of conversations we've already touched in this batch
         processed_conv_ids = set()
 
         for msg in created_msgs:
@@ -421,11 +419,15 @@ class ChatService:
                 
             meta = receiver_metadata[msg.receiver_id]
             
-            # Update pointers
-            conv.last_message = msg
+            # 1. Update Denormalized Fields using Helper Logic
+            preview_text = ChatService._generate_preview_text(msg.content, msg.message_type)
+            
+            conv.last_message_content = preview_text
+            conv.last_message_type = msg.message_type
+            conv.last_message_time = msg.created_at
             conv.updated_at = msg.created_at
             
-            # Update Badge Count (JSON Logic)
+            # 2. Update Badge Count
             if not meta['is_viewing']:
                 r_str = str(msg.receiver_id)
                 current_counts = conv.unread_counts or {}
@@ -439,15 +441,19 @@ class ChatService:
             convs_to_update.append(conv)
             processed_conv_ids.add(conv.id)
 
-        # Executes 1 SQL Query to update N rows
         if convs_to_update:
             Conversation.objects.bulk_update(
                 convs_to_update, 
-                fields=['last_message', 'updated_at', 'unread_counts']
+                fields=[
+                    'last_message_content', 
+                    'last_message_type', 
+                    'last_message_time', 
+                    'updated_at', 
+                    'unread_counts'
+                ]
             )
 
         # --- STEP 8: NOTIFICATIONS ---
-        # Broadcast via WebSockets (Fast, non-blocking for DB)
         for msg in created_msgs:
             ChatService._broadcast_message(sender.id, msg.receiver_id, msg)
 
