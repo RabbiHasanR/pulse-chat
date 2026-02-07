@@ -238,7 +238,9 @@ def _finalize_asset(asset_id, result_data):
                 "message_id": msg.id,
                 "sender_id": sender_id,
                 "receiver_id": receiver_id,
-                "status": new_status, # <--- Sends the LATEST status
+                "asset_id": asset.id, 
+                "kind": asset.kind,
+                "status": new_status,
                 "processing_status": "done",
                 "media_url": asset.url,
                 "thumbnail_url": asset.thumbnail_url,
