@@ -1,4 +1,3 @@
-import asyncio
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
@@ -41,9 +40,7 @@ def _send_socket_update_directly(user_id, payload):
         # Log silently, don't crash the task for a socket error
         print(f"⚠️ Direct Socket Push Failed: {e}")
 
-# ----------------------------------------------------------------------------
-# 1. GENERAL NOTIFICATION (Kept for HTTP View Usage)
-# ----------------------------------------------------------------------------
+
 @shared_task(queue='default', ignore_result=True)
 def notify_message_event(payload: dict):
     """
@@ -392,10 +389,6 @@ def process_file_task(self, asset_id):
              raise self.retry(exc=e, countdown=10)
         except Exception:
              _handle_failure(asset_id, e)
-
-# ----------------------------------------------------------------------------
-# 6. FAILURE & CLEANUP (Robust)
-# ----------------------------------------------------------------------------
 
 def _handle_failure(asset_id, error):
     print(f"❌ Processing Failed for Asset {asset_id}: {error}")
