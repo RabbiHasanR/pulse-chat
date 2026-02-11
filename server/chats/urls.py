@@ -5,9 +5,9 @@ urlpatterns = [
     path('send/', SendMessageView.as_view(), name='send-message'),
     path('forward/', ForwardMessageView.as_view(), name='forward-message'),
     
-    path('upload/sign-batch/', SignBatchView.as_view(), name='upload-sign-batch'),
+    path('sign-batch/', SignBatchView.as_view(), name='upload-sign-batch'),
 
-    path("upload/complete/", CompleteUpload.as_view(), name="chat-media-complete"),
+    path("complete/", CompleteUpload.as_view(), name="chat-media-complete"),
     
     path('list/', ChatListView.as_view(), name='chat-list'),
     path('user/<int:partner_id>/messages/', ChatMessageListView.as_view(), name='chat-thread-messages'),
