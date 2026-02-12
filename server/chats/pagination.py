@@ -3,13 +3,11 @@ from utils.response import success_response
 
 class ChatListCursorPagination(CursorPagination):
     page_size = 20
-    # Sort by 'updated_at' so the most active chats appear at the top
+
     ordering = '-updated_at' 
     
     def get_paginated_response(self, data):
-        """
-        Custom response format to match your project's 'success_response' wrapper.
-        """
+
         return success_response(
             message="Chats retrieved successfully",
             data={
@@ -24,7 +22,7 @@ class ChatListCursorPagination(CursorPagination):
 
 class MessageCursorPagination(CursorPagination):
     page_size = 30
-    ordering = '-created_at' # Newest messages first
+    ordering = '-created_at'
     
     def get_paginated_response(self, data):
         return success_response(

@@ -5,7 +5,6 @@ import math
 
 User = get_user_model()
 
-# ... Constants (MIN_PART_SIZE etc.) remain the same ...
 MIN_PART_SIZE = 5 * 1024 * 1024
 MAX_PART_SIZE = 512 * 1024 * 1024
 MAX_PARTS     = 10_000
@@ -13,15 +12,11 @@ DIRECT_THRESHOLD = 5 * 1024 * 1024
 MAX_BATCH_COUNT  = 500
 
 class AttachmentItem(serializers.Serializer):
-    """
-    Validates a single file within the album.
-    """
     file_name = serializers.CharField()
     file_size = serializers.IntegerField(min_value=1)
     content_type = serializers.CharField()
     kind = serializers.ChoiceField(choices=['image', 'video', 'audio', 'file']) 
 
-    # Multipart fields
     client_part_size = serializers.IntegerField(required=False, min_value=MIN_PART_SIZE, max_value=MAX_PART_SIZE)
     client_num_parts = serializers.IntegerField(required=False, min_value=1)
     batch_count = serializers.IntegerField(required=False, min_value=1, max_value=MAX_BATCH_COUNT)
@@ -45,13 +40,11 @@ class AttachmentItem(serializers.Serializer):
             raise serializers.ValidationError({"client_num_parts": "Too many parts."})
         return d
 
-# --- UNIFIED SEND MESSAGE SERIALIZER ---
 class SendMessageInSerializer(serializers.Serializer):
     receiver_id = serializers.IntegerField(min_value=1)
     text = serializers.CharField(required=False, allow_blank=True)
     reply_to_id = serializers.IntegerField(required=False, allow_null=True)
     
-    # List of files (Optional)
     attachments = serializers.ListField(
         child=AttachmentItem(), 
         required=False, 
@@ -68,9 +61,7 @@ class SendMessageInSerializer(serializers.Serializer):
 
 
 class SignBatchInSerializer(serializers.Serializer):
-    """
-    Used to get the next set of Presigned URLs for a large multipart upload.
-    """
+
     upload_id = serializers.CharField(required=True)
     object_key = serializers.CharField(required=True)
     start_part = serializers.IntegerField(required=False, default=1, min_value=1)
@@ -79,40 +70,36 @@ class SignBatchInSerializer(serializers.Serializer):
     
 class ForwardMessageInSerializer(serializers.Serializer):
     message_id = serializers.IntegerField()
-    # Limit to 20 users at once for synchronous safety
     receiver_ids = serializers.ListField(
         child=serializers.IntegerField(), 
         min_length=1, 
         max_length=20 
     )
-    # Optional: User can add a comment to the forward
+
     text = serializers.CharField(required=False, allow_blank=True)
     
 
 class PrepareUploadIn(serializers.Serializer):
-    # --- MODE A: NEW ALBUM CREATION ---
     receiver_id = serializers.IntegerField(required=False, min_value=1)
-    text = serializers.CharField(required=False, allow_blank=True) # Caption for the album
+    text = serializers.CharField(required=False, allow_blank=True)
     attachments = serializers.ListField(
         child=AttachmentItem(), 
         required=False, 
         allow_empty=False
     )
 
-    # --- MODE B: NEXT-BATCH (For a single large file renewal) ---
     upload_id = serializers.CharField(required=False)
     object_key = serializers.CharField(required=False)
     start_part = serializers.IntegerField(required=False, min_value=1)
     batch_count = serializers.IntegerField(required=False, min_value=1, max_value=MAX_BATCH_COUNT)
 
     def validate(self, d):
-        # Mode B: Renewing URLS for an existing upload
+
         if d.get("upload_id"):
             if not d.get("object_key"):
                 raise serializers.ValidationError({"object_key": "Required with upload_id"})
             return d
 
-        # Mode A: Creating new album
         if not d.get("receiver_id"):
             raise serializers.ValidationError({"receiver_id": "This field is required."})
         
@@ -121,9 +108,7 @@ class PrepareUploadIn(serializers.Serializer):
 
         return d
 
-# CompleteUploadIn remains mostly the same, ensuring we identify assets correctly
 class CompleteUploadIn(serializers.Serializer):
-    # object_key = serializers.CharField()
     asset_id = serializers.IntegerField()
     upload_id = serializers.CharField(required=False)
     parts = serializers.ListField(child=serializers.DictField(), required=False)
@@ -140,7 +125,6 @@ class CompleteUploadIn(serializers.Serializer):
 
 
 class UserSimpleSerializer(serializers.ModelSerializer):
-    # avatar = serializers.CharField(source='avatar_url', read_only=True)
     class Meta:
         model = User
         fields = ['id', 'email', 'full_name', 'avatar_url'] 
@@ -214,10 +198,7 @@ class ChatListSerializer(serializers.ModelSerializer):
 
 
 class MediaAssetSerializer(serializers.ModelSerializer):
-    """
-    Serializes attachments. 
-    Uses the @property fields 'url' and 'thumbnail_url' from the model.
-    """
+
     url = serializers.CharField(read_only=True)
     thumbnail_url = serializers.CharField(read_only=True)
 
@@ -229,7 +210,6 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             'file_name', 'file_size', 'processing_status'
         ]
 
-# --- 2. CHAT MESSAGE SERIALIZER ---
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender = UserSimpleSerializer(read_only=True)
     media_assets = MediaAssetSerializer(many=True, read_only=True)
@@ -239,7 +219,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
         model = ChatMessage
         fields = [
             'id', 
-            'sender',          # Returns ID (Integer)
+            'sender',          
             'content', 
             'message_type',
             'status', 
@@ -248,15 +228,14 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             'is_forwarded', 
             'forward_source_name',
             
-            # Reply Data
-            'reply_to',        # ID of parent
-            'reply_metadata',  # Snapshot { "sender": "Alice", "preview": "..." }
+
+            'reply_to',        
+            'reply_metadata',
             
-            # Attachments
-            'asset_count',     # Quick check for UI
-            'media_assets',    # Full objects with URLs
+            'asset_count',     
+            'media_assets',    
             
-            # Helper
+
             'is_me'
         ]
 
@@ -268,10 +247,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
     
     
 class MediaAssetPendingSerializer(serializers.ModelSerializer):
-    """
-    Lightweight serializer for 'queued' assets.
-    removes 'url' and 'thumbnail_url' to prevent 404 errors on frontend.
-    """
+
     class Meta:
         model = MediaAsset
         fields = [
@@ -279,7 +255,7 @@ class MediaAssetPendingSerializer(serializers.ModelSerializer):
             'kind', 
             'file_name', 
             'file_size', 
-            'processing_status' # Important: Frontend checks this to show Spinner
+            'processing_status' 
         ]
         
         
@@ -294,7 +270,7 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
         model = ChatMessage
         fields = [
             'id', 
-            'sender',          # Returns ID (Integer)
+            'sender',          
             'content', 
             'message_type',
             'status', 
@@ -302,16 +278,15 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
             'is_edited', 
             'is_forwarded', 
             'forward_source_name',
+
+            'reply_to',        
+            'reply_metadata',  
             
-            # Reply Data
-            'reply_to',        # ID of parent
-            'reply_metadata',  # Snapshot { "sender": "Alice", "preview": "..." }
+
+            'asset_count',     
+            'media_assets',    
             
-            # Attachments
-            'asset_count',     # Quick check for UI
-            'media_assets',    # Full objects with URLs
-            
-            # Helper
+
             'is_me'
         ]
 
@@ -327,25 +302,20 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
 
 
 class ChatMessageListSerializer(serializers.ModelSerializer):
-    """
-    Optimized for LIST Views (High Volume).
-    - Returns 'sender_id' (Integer) instead of full User object.
-    - Filters out 'failed' assets for the Receiver.
-    """
-    # 1. OPTIMIZATION: Return only the Integer ID
+
     sender_id = serializers.IntegerField(read_only=True)
     
-    # 2. Attachments (Using your existing asset serializer)
+
     media_assets = MediaAssetSerializer(many=True, read_only=True)
     
-    # 3. Helper
+
     is_me = serializers.SerializerMethodField()
     
     class Meta:
         model = ChatMessage
         fields = [
             'id', 
-            'sender_id',       # <--- Efficient (Just '2', not a full JSON object)
+            'sender_id',       
             'content', 
             'message_type',
             'status', 
@@ -354,15 +324,15 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
             'is_forwarded', 
             'forward_source_name',
             
-            # Reply Data
-            'reply_to',        # Returns ID of parent
-            'reply_metadata',  # Lightweight Snapshot
+
+            'reply_to',        
+            'reply_metadata',  
             
-            # Attachments
+
             'asset_count',     
             'media_assets',    
             
-            # Helper
+
             'is_me'
         ]
 
@@ -373,14 +343,9 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
         return False
 
     def to_representation(self, instance):
-        """
-        Runtime Filtering Logic:
-        - Fetch ALL assets from DB (Prefetched).
-        - Filter OUT 'failed' assets ONLY if I am the Receiver.
-        """
+
         data = super().to_representation(instance)
         
-        # We access the 'is_me' field we just calculated
         is_me = data.get('is_me')
 
         # LOGIC:
