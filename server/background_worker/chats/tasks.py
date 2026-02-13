@@ -14,13 +14,13 @@ from celery.exceptions import SoftTimeLimitExceeded, MaxRetriesExceededError
 from utils.redis_client import sync_redis_client, RedisKeys 
 from chats.models import ChatMessage, MediaAsset
 
-# Processors
+
 from utils.media_processors.image import ImageProcessor
 from utils.media_processors.video import VideoProcessor
 from utils.media_processors.audio import AudioProcessor
 from utils.media_processors.file import FileProcessor
 
-# --- HELPERS ---
+
 
 def room(user_id):
     return f"user_{user_id}"
