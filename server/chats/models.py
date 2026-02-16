@@ -6,16 +6,9 @@ from django.conf import settings
 from django.db import models
 from django.conf import settings
 
-# --- 1. CONVERSATION (The "Smart" Container) ---
+
 class Conversation(models.Model):
-    """
-    The 'Container' for messages between two users.
     
-    SCALABILITY STRATEGY (Stage 1 - Denormalization):
-    Instead of querying the huge 'ChatMessage' table to build the Chat List,
-    we store the 'Last Message' and 'Unread Counts' directly here.
-    This makes loading the Chat List O(1) instead of O(N).
-    """
     participant_1 = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="conv_p1")
     participant_2 = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="conv_p2")
     
