@@ -78,6 +78,12 @@ class VideoProcessor:
 
             return master_key, thumb_key
 
+        except ffmpeg.Error as e:
+            # 🔥 CAPTURE THE REAL ERROR LOG
+            error_log = e.stderr.decode('utf8') if e.stderr else str(e)
+            logger.error(f"FFmpeg Execution Failed:\n{error_log}")
+            raise ValueError(f"FFmpeg Error: {error_log}") from e
+
         except Exception as e:
             logger.error(f"Video Processing Failed: {e}")
             raise e

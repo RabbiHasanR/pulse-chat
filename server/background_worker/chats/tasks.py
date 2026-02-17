@@ -245,7 +245,7 @@ def process_video_task(self, asset_id):
                 # Save to Redis (Critical for retry)
                 cache.set(checkpoint_key, {'variants': local_variants}, timeout=7200)
                 
-                update_data["thumbnail_url"] = asset.thumbnail_url()
+                update_data["thumbnail_url"] = asset.thumbnail_url
                 update_data["stage"] = "thumbnail_ready"
                 should_send = True
 
