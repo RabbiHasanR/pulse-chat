@@ -190,7 +190,7 @@ def _finalize_asset(asset, msg, result_data):
         # Recommendation: Use Sentry here
 
 # ----------------------------------------------------------------------------
-# 4. VIDEO TASK (Resume-on-Retry + In-Memory)
+# 4. VIDEO TASK (Resume-on-Retry + In-Memory + Playable Optimization)
 # ----------------------------------------------------------------------------
 @shared_task(
     bind=True, 
@@ -223,12 +223,19 @@ def process_video_task(self, asset_id):
         # Local Accumulators (No DB Writes)
         local_variants = asset.variants
         last_sent_progress = cache.get(progress_key, 0)
+        
+        # UX OPTIMIZATION: Track if we already told UI "It's Done"
+        is_playable_notified = False 
 
         # --- PHASE 2: PROCESSING (Memory Only) ---
 
         def on_progress(percent, thumb_key=None):
             nonlocal last_sent_progress
             cache.set(progress_key, percent, timeout=3600)
+            
+            # 🚀 OPTIMIZATION: If user can already watch it, stop distracting them with progress bars
+            if is_playable_notified:
+                return 
             
             should_send = False
             update_data = {
@@ -240,15 +247,17 @@ def process_video_task(self, asset_id):
             if thumb_key:
                 # Update Local State & Checkpoint
                 local_variants['thumbnail'] = thumb_key
-                asset.variants = local_variants # Update obj for URL generation
+                asset.variants = local_variants 
                 
                 # Save to Redis (Critical for retry)
                 cache.set(checkpoint_key, {'variants': local_variants}, timeout=7200)
                 
-                update_data["thumbnail_url"] = asset.thumbnail_url
+                # correct: property access, no parentheses
+                update_data["thumbnail_url"] = asset.thumbnail_url 
                 update_data["stage"] = "thumbnail_ready"
                 should_send = True
 
+            # Send progress ONLY if not playable yet
             if abs(percent - last_sent_progress) >= 2 or should_send:
                 last_sent_progress = percent
                 update_data["progress"] = round(percent, 1)
@@ -268,12 +277,21 @@ def process_video_task(self, asset_id):
 
         def on_playable(master_key):
             """Notify UI that playback is possible."""
+            nonlocal is_playable_notified
+            is_playable_notified = True  # <--- SILENCE FUTURE PROGRESS UPDATES
+            
             asset.object_key = master_key
+            
+            # TELL UI: "IT IS DONE" (Even if it's only 30% on server)
+            # This hides the spinner and shows the Play button immediately.
             update_data = {
                 "message_id": msg.id,
                 "asset_id": asset.id,
                 "video_url": asset.url,
-                "processing_status": "running", 
+                
+                "processing_status": "done", # <--- The "Little Lie" for better UX
+                "progress": 100, 
+                
                 "stage": "playable"
             }
             _send_socket_update_directly(msg.receiver_id, {"type": "chat_message_update", "data": update_data})
