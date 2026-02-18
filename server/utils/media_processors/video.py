@@ -147,21 +147,17 @@ class VideoProcessor:
         base_s3_prefix = f"processed/{self.asset.id}/hls"
         master_key = f"{base_s3_prefix}/master.m3u8"
         
-        # Load completed parts from Asset variants (passed from Task via Redis checkpoint)
         completed_parts = self.asset.variants.get('hls_parts', {})
 
-        # Filter resolutions smaller than input
         valid_resolutions = [r for r in RESOLUTIONS if input_min_dim >= (min(r["w"], r["h"]) * 0.9)]
         if not valid_resolutions: valid_resolutions = [RESOLUTIONS[-1]]
         
-        # Sort by height (ascending) so lower quality is processed/listed first
         valid_resolutions.sort(key=lambda x: x['h'])
 
         total_variants = len(valid_resolutions)
         base_progress = 5.0
         progress_per_variant = 95.0 / total_variants
         
-        # Master Playlist Accumulator
         master_playlist_lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
 
         for i, res in enumerate(valid_resolutions):
@@ -171,29 +167,19 @@ class VideoProcessor:
             # --- RESUME CHECK ---
             if completed_parts.get(variant_name):
                 logger.info(f"⏩ Resuming: Skipping {variant_name}")
-                
-                # Even if skipped, we MUST add it to the master playlist
                 master_playlist_lines.append(
                     f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
                     f"{variant_name}/index.m3u8"
                 )
-                
-                # Re-upload Master Playlist (Ensures consistency on retry)
                 self._update_master_playlist(master_playlist_lines, master_key)
-
-                # Report "Fake" Progress to UI
                 if callback:
                     fake_pct = base_progress + ((i + 1) * progress_per_variant)
                     callback(fake_pct)
-                
-                # If first variant is done, it's playable
                 if i == 0 and playable_callback:
                     playable_callback(master_key)
-                
                 continue 
             # --------------------
 
-            # Normal Processing
             logger.info(f"Transcoding variant: {variant_name}")
             variant_dir = os.path.join(self.temp_dir, variant_name)
             os.makedirs(variant_dir, exist_ok=True)
@@ -217,27 +203,48 @@ class VideoProcessor:
                     .output(
                         playlist_file,
                         vf=f"scale=-2:{res['h']}",
-                        c="libx264", b=res['bitrate'], maxrate=res['maxrate'], bufsize=res['bufsize'],
-                        format="hls", hls_time=SEGMENT_DURATION, hls_list_size=0,
-                        hls_segment_filename=segment_pattern, hls_flags="delete_segments",
-                        g=SEGMENT_DURATION * 30, preset="veryfast",
+                        
+                        # ✅ FIX 1: Explicit Video Codec
+                        vcodec="libx264",
+                        
+                        # ✅ FIX 2: Explicit Audio Codec
+                        acodec="aac",
+                        
+                        # ✅ FIX 3: Explicit Video Bitrate (-b:v)
+                        video_bitrate=res['bitrate'],
+                        
+                        # Optional: explicit audio bitrate
+                        audio_bitrate="128k",
+
+                        maxrate=res['maxrate'],
+                        bufsize=res['bufsize'],
+                        format="hls", 
+                        hls_time=SEGMENT_DURATION, 
+                        hls_list_size=0,
+                        hls_segment_filename=segment_pattern, 
+                        hls_flags="delete_segments",
+                        g=SEGMENT_DURATION * 30, 
+                        preset="veryfast",
                         progress=progress_url
                     )
                     .global_args('-nostats') 
-                    .run(quiet=True, overwrite_output=True)
+                    # Enable logs for debugging if it fails again
+                    .run(quiet=False, overwrite_output=True) 
                 )
+            except ffmpeg.Error as e:
+                # Capture stderr for logs
+                error_log = e.stderr.decode('utf8') if e.stderr else str(e)
+                logger.error(f"FFmpeg Execution Failed:\n{error_log}")
+                raise ValueError(f"FFmpeg Error: {error_log}") from e
             finally:
                 tracker.stop()
 
-            # Upload Segments
             self._upload_directory(variant_dir, f"{base_s3_prefix}/{variant_name}")
             shutil.rmtree(variant_dir)
             
-            # Save Checkpoint (Calls back to Task -> Redis)
             if checkpoint_callback:
                 checkpoint_callback(variant_name)
 
-            # Update Master Playlist
             master_playlist_lines.append(
                 f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={res['w']}x{res['h']}\n"
                 f"{variant_name}/index.m3u8"
