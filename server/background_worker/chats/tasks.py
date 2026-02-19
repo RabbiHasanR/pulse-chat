@@ -487,7 +487,7 @@ def cleanup_stuck_assets(self):
         # Bulk Fail Assets
         stuck_assets.update(processing_status='failed', variants={'error': 'Timeout/Crash'})
 
-        # Notify Affected Users
+
         msgs = ChatMessage.objects.filter(id__in=msg_ids)
         for msg in msgs:
             # Re-evaluate message status
