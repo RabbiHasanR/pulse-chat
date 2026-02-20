@@ -1,7 +1,7 @@
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Count, Q, Max
+from django.db.models import  Q, Max
 from celery import shared_task
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
