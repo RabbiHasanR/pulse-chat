@@ -2,11 +2,6 @@ from django.db import models
 from django.conf import settings
 
 
-
-from django.db import models
-from django.conf import settings
-
-
 class Conversation(models.Model):
     
     participant_1 = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="conv_p1")
