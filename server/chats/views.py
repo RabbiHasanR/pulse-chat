@@ -105,9 +105,16 @@ class CompleteUpload(APIView):
         d = ser.validated_data
         
         try:
-            asset = MediaAsset.objects.get(id=d['asset_id'], processing_status="queued")
+            asset = MediaAsset.objects.select_related('message').get(
+                id=d['asset_id'], 
+                processing_status="queued"
+            )
         except MediaAsset.DoesNotExist:
             return error_response("Asset not found or already processed", status=404)
+
+        # 2. SECURITY: Verify Ownership
+        if asset.message.sender_id != request.user.id:
+            return error_response("You do not have permission to process this asset.", status=403)
 
         if d.get("parts") and d.get("upload_id"):
              s3.complete_multipart_upload(
