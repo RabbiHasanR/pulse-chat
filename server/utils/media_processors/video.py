@@ -50,7 +50,6 @@ class VideoProcessor:
             metadata = self._get_metadata(input_url)
             
             # 3. Thumbnail Generation (Resume Check)
-            # We check if 'thumbnail' key already exists in the asset variants
             current_vars = self.asset.variants or {}
             thumb_key = current_vars.get('thumbnail')
             
@@ -155,8 +154,6 @@ class VideoProcessor:
         valid_resolutions.sort(key=lambda x: x['h'])
 
         total_variants = len(valid_resolutions)
-        base_progress = 5.0
-        progress_per_variant = 95.0 / total_variants
         
         master_playlist_lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
 
@@ -172,9 +169,11 @@ class VideoProcessor:
                     f"{variant_name}/index.m3u8"
                 )
                 self._update_master_playlist(master_playlist_lines, master_key)
-                if callback:
-                    fake_pct = base_progress + ((i + 1) * progress_per_variant)
-                    callback(fake_pct)
+                
+                # If we skipped the first variant, UI progress is instantly 100% playable
+                if callback and i == 0:
+                    callback(100.0)
+                    
                 if i == 0 and playable_callback:
                     playable_callback(master_key)
                 continue 
@@ -185,12 +184,16 @@ class VideoProcessor:
             os.makedirs(variant_dir, exist_ok=True)
             playlist_file = os.path.join(variant_dir, "index.m3u8")
             segment_pattern = os.path.join(variant_dir, "seg_%03d.ts")
-
-            current_variant_start_pct = base_progress + (i * progress_per_variant)
             
             def handle_ffmpeg_update(ffmpeg_pct):
-                global_pct = current_variant_start_pct + ((ffmpeg_pct / 100) * progress_per_variant)
-                if callback: callback(global_pct)
+                # UX OPTIMIZATION: "Time to Playable" Math
+                # Only scale the UI progress bar for the FIRST variant (5% -> 100%)
+                if i == 0:
+                    ui_pct = 5.0 + (ffmpeg_pct * 0.95)
+                else:
+                    ui_pct = 100.0
+                    
+                if callback: callback(ui_pct)
 
             tracker = FFmpegProgressTracker(metadata['duration'], handle_ffmpeg_update)
             tracker.start()
@@ -204,16 +207,10 @@ class VideoProcessor:
                         playlist_file,
                         vf=f"scale=-2:{res['h']}",
                         
-                        # ✅ FIX 1: Explicit Video Codec
+                        # Explicit Codecs and Bitrates
                         vcodec="libx264",
-                        
-                        # ✅ FIX 2: Explicit Audio Codec
                         acodec="aac",
-                        
-                        # ✅ FIX 3: Explicit Video Bitrate (-b:v)
                         video_bitrate=res['bitrate'],
-                        
-                        # Optional: explicit audio bitrate
                         audio_bitrate="128k",
 
                         maxrate=res['maxrate'],
@@ -228,7 +225,6 @@ class VideoProcessor:
                         progress=progress_url
                     )
                     .global_args('-nostats') 
-                    # Enable logs for debugging if it fails again
                     .run(quiet=False, overwrite_output=True) 
                 )
             except ffmpeg.Error as e:
