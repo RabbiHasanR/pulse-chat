@@ -1,7 +1,7 @@
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import  Q, Max
+from django.db.models import Q, Max
 from celery import shared_task
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -14,12 +14,10 @@ from celery.exceptions import SoftTimeLimitExceeded, MaxRetriesExceededError
 from utils.redis_client import sync_redis_client, RedisKeys 
 from chats.models import ChatMessage, MediaAsset
 
-
 from utils.media_processors.image import ImageProcessor
 from utils.media_processors.video import VideoProcessor
 from utils.media_processors.audio import AudioProcessor
 from utils.media_processors.file import FileProcessor
-
 
 
 def room(user_id):
@@ -37,15 +35,12 @@ def _send_socket_update_directly(user_id, payload):
             "payload": payload,
         })
     except Exception as e:
-        # Log silently, don't crash the task for a socket error
         print(f"⚠️ Direct Socket Push Failed: {e}")
-
 
 @shared_task(queue='default', ignore_result=True)
 def notify_message_event(payload: dict):
     """
     Used by HTTP Views to send the initial "New Message" signal asynchronously.
-    NOT used by Media Tasks anymore (they use direct push).
     """
     data = payload.get("data", {})
     sender_id = data.get("sender_id")
@@ -57,18 +52,15 @@ def notify_message_event(payload: dict):
     _send_socket_update_directly(sender_id, payload)
     _send_socket_update_directly(receiver_id, payload)
 
-    # 2. "Seen" Logic (Only if user is currently looking)
-    # We do this here to avoid blocking the HTTP response time
+    # 2. "Seen" Logic
     message_id = data.get("message_id")
     if message_id and data.get("status") == "sent":
         is_online = sync_redis_client.sismember(RedisKeys.ONLINE_USERS, receiver_id)
         if is_online:
             viewing_key = RedisKeys.viewing(receiver_id, sender_id)
             if sync_redis_client.scard(viewing_key) > 0:
-                # Atomically update DB
                 ChatMessage.objects.filter(id=message_id).update(status="seen")
                 
-                # Send Read Receipt to Sender
                 read_receipt = {
                     "type": "chat_read_receipt",
                     "data": {
@@ -85,10 +77,6 @@ def notify_message_event(payload: dict):
 # ----------------------------------------------------------------------------
 @shared_task(ignore_result=True, time_limit=10, expires=60)
 def mark_delivered_and_notify_senders(user_id):
-    """
-    Runs when a user connects via WebSocket.
-    Marks all 'SENT' messages as 'DELIVERED'.
-    """
     pending_groups = ChatMessage.objects.filter(
         receiver_id=user_id,
         status=ChatMessage.Status.SENT
@@ -101,7 +89,6 @@ def mark_delivered_and_notify_senders(user_id):
         status=ChatMessage.Status.SENT
     ).update(status=ChatMessage.Status.DELIVERED)
 
-    # Notify all senders that their messages were delivered
     for entry in pending_groups:
         event = {
             "type": "chat_delivery_receipt",
@@ -116,10 +103,6 @@ def mark_delivered_and_notify_senders(user_id):
 # 3. OPTIMIZED FINALIZER (Shared by all media tasks)
 # ----------------------------------------------------------------------------
 def _finalize_asset(asset, msg, result_data):
-    """
-    OPTIMIZED: Accepts objects (asset, msg) to avoid DB lookups.
-    Performs one atomic commit at the end.
-    """
     try:
         # 1. Update Asset Data (Memory)
         if result_data:
@@ -134,10 +117,8 @@ def _finalize_asset(asset, msg, result_data):
         asset.processing_status = "done"
         asset.processing_progress = 100.0
 
-        # 2. Determine Message Status (Redis Check)
+        # 2. Determine Message Status
         new_status = msg.status
-        
-        # Check if Receiver is Viewing/Online (Redis is fast)
         viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
         if sync_redis_client.scard(viewing_key) > 0:
             new_status = 'seen'
@@ -145,35 +126,35 @@ def _finalize_asset(asset, msg, result_data):
             if sync_redis_client.sismember(RedisKeys.ONLINE_USERS, msg.receiver_id):
                 new_status = 'delivered'
 
-        # 3. ATOMIC COMMIT (1 Write for Asset, 1 Optional for Msg)
+        # 3. ATOMIC COMMIT
         with transaction.atomic():
             asset.save()
             if new_status != msg.status:
                 msg.status = new_status
                 msg.save(update_fields=['status', 'updated_at'])
 
-        # 4. WebSocket Broadcast
+        # 4. WebSocket Broadcast (Unified Schema)
         payload = {
             "type": "chat_message_update",
             "success": True,
             "data": {
-                "message_id": msg.id,
-                "sender_id": msg.sender_id,
-                "receiver_id": msg.receiver_id,
-                "asset_id": asset.id, 
-                "kind": asset.kind,
+                "id": msg.id,
                 "status": new_status,
-                "processing_status": "done",
-                "media_url": asset.url,
-                "thumbnail_url": asset.thumbnail_url,
-                "width": asset.width,
-                "height": asset.height,
+                "media_assets": [{
+                    "id": asset.id, 
+                    "kind": asset.kind,
+                    "processing_status": "done",
+                    "url": asset.url,
+                    "thumbnail_url": asset.thumbnail_url,
+                    "width": asset.width,
+                    "height": asset.height,
+                }]
             }
         }
         _send_socket_update_directly(msg.receiver_id, payload)
         _send_socket_update_directly(msg.sender_id, payload)
 
-        # 5. Read Receipt (If upgraded to Seen)
+        # 5. Read Receipt
         if new_status == 'seen' and msg.status != 'seen':
              read_receipt = {
                 "type": "chat_read_receipt",
@@ -187,7 +168,6 @@ def _finalize_asset(asset, msg, result_data):
 
     except Exception as e:
         print(f"❌ Finalize Failed for Asset {asset.id}: {e}")
-        # Recommendation: Use Sentry here
 
 # ----------------------------------------------------------------------------
 # 4. VIDEO TASK (Resume-on-Retry + In-Memory + Playable Optimization)
@@ -197,7 +177,7 @@ def _finalize_asset(asset, msg, result_data):
     queue='video_queue',
     acks_late=True,
     reject_on_worker_lost=False,
-    soft_time_limit=3600, # 1 Hour
+    soft_time_limit=3600, 
     time_limit=3660,
     max_retries=3
 )
@@ -206,108 +186,104 @@ def process_video_task(self, asset_id):
     progress_key = f"asset_progress:{asset_id}"
     
     try:
-        # --- PHASE 1: INITIALIZATION (Read Only) ---
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
         
-        # Check Redis for Crash Recovery
         saved_state = cache.get(checkpoint_key)
         if saved_state:
             print(f"🔄 Resuming asset {asset_id} from Redis checkpoint...")
             asset.variants = saved_state.get('variants', {})
         else:
-            # First run: Set status to running
             MediaAsset.objects.filter(id=asset_id).update(processing_status="running")
             asset.variants = asset.variants or {}
 
-        # Local Accumulators (No DB Writes)
         local_variants = asset.variants
         last_sent_progress = cache.get(progress_key, 0)
-        
-        # UX OPTIMIZATION: Track if we already told UI "It's Done"
         is_playable_notified = False 
-
-        # --- PHASE 2: PROCESSING (Memory Only) ---
 
         def on_progress(percent, thumb_key=None):
             nonlocal last_sent_progress
             cache.set(progress_key, percent, timeout=3600)
             
-            # 🚀 OPTIMIZATION: If user can already watch it, stop distracting them with progress bars
             if is_playable_notified:
                 return 
             
             should_send = False
-            update_data = {
-                "message_id": msg.id, 
-                "asset_id": asset.id, 
+            
+            # Unified Schema Structure
+            asset_data = {
+                "id": asset.id,
                 "processing_status": "running"
             }
 
             if thumb_key:
-                # Update Local State & Checkpoint
                 local_variants['thumbnail'] = thumb_key
                 asset.variants = local_variants 
-                
-                # Save to Redis (Critical for retry)
                 cache.set(checkpoint_key, {'variants': local_variants}, timeout=7200)
-                
-                # correct: property access, no parentheses
-                update_data["thumbnail_url"] = asset.thumbnail_url 
-                update_data["stage"] = "thumbnail_ready"
+                asset_data["thumbnail_url"] = asset.thumbnail_url 
                 should_send = True
+            
+            # Always attach thumbnail if we have it in memory
+            if 'thumbnail' in local_variants:
+                asset_data["thumbnail_url"] = asset.thumbnail_url
 
-            # Send progress ONLY if not playable yet
             if abs(percent - last_sent_progress) >= 2 or should_send:
                 last_sent_progress = percent
-                update_data["progress"] = round(percent, 1)
+                asset_data["progress"] = round(percent, 1)
                 should_send = True
 
             if should_send:
-                _send_socket_update_directly(msg.receiver_id, {"type": "chat_message_update", "data": update_data})
-                _send_socket_update_directly(msg.sender_id, {"type": "chat_message_update", "data": update_data})
+                update_payload = {
+                    "type": "chat_message_update",
+                    "data": {
+                        "id": msg.id, 
+                        "status": msg.status,
+                        "media_assets": [asset_data]
+                    }
+                }
+                
+                # 🚀 SMART ROUTING: Always send to Sender
+                _send_socket_update_directly(msg.sender_id, update_payload)
+                
+                # 🚀 SMART ROUTING: Send to Receiver ONLY if viewing chat
+                viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
+                if sync_redis_client.scard(viewing_key) > 0:
+                    _send_socket_update_directly(msg.receiver_id, update_payload)
 
         def on_checkpoint(variant_name):
-            """Saves HLS part completion to Redis."""
             if 'hls_parts' not in local_variants: local_variants['hls_parts'] = {}
             local_variants['hls_parts'][variant_name] = True
-            
-            # 🔥 Save to Redis (TTL 2 hours)
             cache.set(checkpoint_key, {'variants': local_variants}, timeout=7200)
 
         def on_playable(master_key):
-            """Notify UI that playback is possible."""
             nonlocal is_playable_notified
-            is_playable_notified = True  # <--- SILENCE FUTURE PROGRESS UPDATES
-            
+            is_playable_notified = True 
             asset.object_key = master_key
             
-            # TELL UI: "IT IS DONE" (Even if it's only 30% on server)
-            # This hides the spinner and shows the Play button immediately.
-            update_data = {
-                "message_id": msg.id,
-                "asset_id": asset.id,
-                "video_url": asset.url,
-                
-                "processing_status": "done", # <--- The "Little Lie" for better UX
-                "progress": 100, 
-                
-                "stage": "playable"
+            update_payload = {
+                "type": "chat_message_update",
+                "data": {
+                    "id": msg.id,
+                    "status": msg.status,
+                    "media_assets": [{
+                        "id": asset.id,
+                        "url": asset.url,
+                        "processing_status": "done",
+                        "progress": 100,
+                    }]
+                }
             }
-            _send_socket_update_directly(msg.receiver_id, {"type": "chat_message_update", "data": update_data})
-            _send_socket_update_directly(msg.sender_id, {"type": "chat_message_update", "data": update_data})
+            # Send to both immediately on major state change
+            _send_socket_update_directly(msg.receiver_id, update_payload)
+            _send_socket_update_directly(msg.sender_id, update_payload)
 
-        # --- EXECUTION ---
         processor = VideoProcessor(asset)
-        
-        # This takes 10-20 mins but hits DB Zero times
         master_key, thumb_key = processor.process(
             on_progress_callback=on_progress,
             on_checkpoint_save=on_checkpoint,
             on_playable_callback=on_playable
         )
         
-        # --- PHASE 3: FINALIZE (Write to DB) ---
         result_data = {
             "object_key": master_key, 
             "variants": {
@@ -320,7 +296,6 @@ def process_video_task(self, asset_id):
         
         _finalize_asset(asset, msg, result_data)
         
-        # Cleanup
         cache.delete(progress_key)
         cache.delete(checkpoint_key)
 
@@ -336,25 +311,17 @@ def process_video_task(self, asset_id):
         _handle_failure(asset_id, e)
 
 # ----------------------------------------------------------------------------
-# 5. IMAGE / AUDIO / FILE TASKS (Direct Socket + Optimized Finalizer)
+# 5. IMAGE / AUDIO / FILE TASKS
 # ----------------------------------------------------------------------------
 
 @shared_task(bind=True, queue='image_queue', acks_late=True, max_retries=3)
 def process_image_task(self, asset_id):
     try:
-        # 1. Quick Update to Running
         MediaAsset.objects.filter(id=asset_id).update(processing_status="running")
-        
-        # 2. Fetch Objects
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
-        
-        # 3. Process
         processor = ImageProcessor(asset)
         result_data = processor.process()
-        
-        # 4. Finalize (Passing objects!)
         _finalize_asset(asset, asset.message, result_data)
-
     except (BotoCoreError, ClientError) as e:
         try:
              raise self.retry(exc=e, countdown=5 * (2 ** self.request.retries))
@@ -370,16 +337,18 @@ def process_audio_task(self, asset_id):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
 
-        # Notify Start via Socket (Direct)
+        # Unified Schema
         _send_socket_update_directly(msg.sender_id, {
-             "type": "chat_message_update", 
-             "data": {"message_id": msg.id, "asset_id": asset.id, "processing_status": "running"}
+            "type": "chat_message_update", 
+            "data": {
+                "id": msg.id, 
+                "media_assets": [{"id": asset.id, "processing_status": "running"}]
+            }
         })
 
         processor = AudioProcessor(asset)
         result_data = processor.process()
         _finalize_asset(asset, msg, result_data)
-
     except Exception as e:
         try:
              raise self.retry(exc=e, countdown=10)
@@ -393,20 +362,24 @@ def process_file_task(self, asset_id):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
         
+        # Unified Schema
         _send_socket_update_directly(msg.sender_id, {
-             "type": "chat_message_update", 
-             "data": {"message_id": msg.id, "asset_id": asset.id, "processing_status": "running"}
+            "type": "chat_message_update", 
+            "data": {
+                "id": msg.id, 
+                "media_assets": [{"id": asset.id, "processing_status": "running"}]
+            }
         })
         
         processor = FileProcessor(asset)
         result_data = processor.process()
         _finalize_asset(asset, msg, result_data)
-        
     except Exception as e:
         try:
              raise self.retry(exc=e, countdown=10)
         except Exception:
              _handle_failure(asset_id, e)
+
 
 def _handle_failure(asset_id, error):
     print(f"❌ Processing Failed for Asset {asset_id}: {error}")
@@ -414,24 +387,18 @@ def _handle_failure(asset_id, error):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
         
-        # Partial Success Check (Video HLS)
         hls_parts = asset.variants.get('hls_parts', {}) if asset.variants else {}
         is_playable = bool(hls_parts)
         
         new_status = "done" if is_playable else "failed"
         
-        # Update Asset
         if not asset.variants: asset.variants = {}
         asset.variants['error_log'] = str(error)
         asset.processing_status = new_status
         asset.save()
 
-        # Update Message
         with transaction.atomic():
             msg.refresh_from_db()
-            
-            # Check if message is "Dead" (No text + No valid media)
-            # We assume current asset is failed unless playable
             valid_assets_count = msg.media_assets.filter(
                 Q(processing_status='done') | Q(processing_status='running')
             ).count()
@@ -442,20 +409,20 @@ def _handle_failure(asset_id, error):
                 msg.status = 'failed'
                 msg.save(update_fields=['status'])
             elif msg.status == 'pending':
-                # If partial success, ensure it's sent
                 msg.status = 'sent'
                 msg.save(update_fields=['status'])
 
-        # Notify via Socket
+        # Unified Schema Event
         payload = {
             "type": "chat_message_update",
             "success": False,
             "data": {
-                "message_id": msg.id,
-                "asset_id": asset.id,
+                "id": msg.id,
                 "status": msg.status,
-                "processing_status": new_status,
-                "error": str(error)
+                "media_assets": [{
+                    "id": asset.id,
+                    "processing_status": new_status,
+                }]
             }
         }
         _send_socket_update_directly(msg.receiver_id, payload)
@@ -466,10 +433,6 @@ def _handle_failure(asset_id, error):
 
 @shared_task(bind=True, queue='default', acks_late=True, soft_time_limit=60)
 def cleanup_stuck_assets(self):
-    """
-    Periodic Zombie Killer.
-    Handles assets stuck in 'queued' (Abandoned) or 'running' (Crashed).
-    """
     try:
         now = timezone.now()
         abandoned_limit = now - timedelta(hours=24)
@@ -483,25 +446,24 @@ def cleanup_stuck_assets(self):
         if not stuck_assets.exists(): return "Clean"
 
         msg_ids = set(stuck_assets.values_list('message_id', flat=True))
-        
-        # Bulk Fail Assets
         stuck_assets.update(processing_status='failed', variants={'error': 'Timeout/Crash'})
 
-
-        msgs = ChatMessage.objects.filter(id__in=msg_ids)
+        msgs = ChatMessage.objects.filter(id__in=msg_ids).prefetch_related('media_assets')
         for msg in msgs:
-            # Re-evaluate message status
             valid = msg.media_assets.filter(processing_status='done').exists()
             if not msg.content and not valid:
                 msg.status = 'failed'
                 msg.save()
             
+            # Unified schema for cleanup notifications
+            failed_assets = [{"id": a.id, "processing_status": "failed"} for a in msg.media_assets.all() if a.processing_status == "failed"]
+            
             payload = {
                 "type": "chat_message_update",
                 "data": {
-                    "message_id": msg.id,
+                    "id": msg.id,
                     "status": msg.status,
-                    "processing_status": "failed"
+                    "media_assets": failed_assets
                 }
             }
             _send_socket_update_directly(msg.sender_id, payload)

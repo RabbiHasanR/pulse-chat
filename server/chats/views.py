@@ -1,12 +1,17 @@
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q, Case, When, F
+from django.contrib.auth import get_user_model
 
 from asgiref.sync import async_to_sync
+from botocore.exceptions import ClientError  # Added for S3 error handling
 
 from utils.response import success_response, error_response
 from utils.aws import s3, AWS_BUCKET, new_object_key
-from .models import ChatMessage, MediaAsset
+from utils.redis_client import ChatRedisService
+from utils.s3 import DEFAULT_EXPIRES_PART
+
+from .models import Conversation, ChatMessage, MediaAsset
 from .serializers import (
     CompleteUploadIn,
     ChatListSerializer,
@@ -22,13 +27,8 @@ from background_worker.chats.tasks import (
     process_audio_task,
     process_file_task
 )
-from django.contrib.auth import get_user_model
-from .models import Conversation, ChatMessage
 from .pagination import ChatListCursorPagination, MessageCursorPagination
 from .services import ChatService
-
-from utils.redis_client import ChatRedisService
-from utils.s3 import DEFAULT_EXPIRES_PART
 
 User = get_user_model()
     
@@ -78,7 +78,6 @@ class SendMessageView(APIView):
                 reply_to_id=reply_to_id
             )
 
-
             return success_response(
                 message="Message sent",
                 data={
@@ -91,8 +90,6 @@ class SendMessageView(APIView):
                 status=201
             )
             
-            
-            
 
 class CompleteUpload(APIView):
     permission_classes = [IsAuthenticated]
@@ -104,6 +101,7 @@ class CompleteUpload(APIView):
             
         d = ser.validated_data
         
+        # 1. Fetch Asset + Message efficiently
         try:
             asset = MediaAsset.objects.select_related('message').get(
                 id=d['asset_id'], 
@@ -116,14 +114,24 @@ class CompleteUpload(APIView):
         if asset.message.sender_id != request.user.id:
             return error_response("You do not have permission to process this asset.", status=403)
 
+        # 3. S3 Safeguard: Catch AWS Errors gracefully
         if d.get("parts") and d.get("upload_id"):
-             s3.complete_multipart_upload(
-                 Bucket=asset.bucket, 
-                 Key=asset.object_key, 
-                 UploadId=d["upload_id"], 
-                 MultipartUpload={"Parts": d["parts"]}
-             )
+            try:
+                 s3.complete_multipart_upload(
+                     Bucket=asset.bucket, 
+                     Key=asset.object_key, 
+                     UploadId=d["upload_id"], 
+                     MultipartUpload={"Parts": d["parts"]}
+                 )
+            except ClientError as e:
+                 error_msg = e.response['Error']['Message'] if 'Error' in e.response else str(e)
+                 return error_response(f"AWS S3 Error: {error_msg}", status=400)
 
+        # 4. PREVENT RACE CONDITIONS (Double Clicks)
+        asset.processing_status = "running"
+        asset.save(update_fields=['processing_status'])
+
+        # 5. Route to correct Queue
         if asset.kind == MediaAsset.Kind.VIDEO:
             process_video_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.IMAGE:
@@ -133,11 +141,13 @@ class CompleteUpload(APIView):
         else:
             process_file_task.delay(asset.id)
 
-        return success_response("Upload completed")
+        return success_response({
+            "message": "Upload completed, processing started.",
+            "asset_id": asset.id
+        })
     
 
 class SignBatchView(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -231,7 +241,6 @@ class ChatListView(APIView):
                     target_ids=partner_ids
                 )
 
-
             serializer = ChatListSerializer(
                 page, 
                 many=True, 
@@ -246,14 +255,6 @@ class ChatListView(APIView):
 
         return paginator.get_paginated_response([])
     
-    
-
-
-
-
-
-
-
 class ChatMessageListView(APIView):
     permission_classes = [IsAuthenticated]
     pagination_class = MessageCursorPagination
@@ -262,12 +263,10 @@ class ChatMessageListView(APIView):
         user_id = request.user.id
         p1, p2 = sorted([user_id, partner_id])
         
-
         try:
             conversation = Conversation.objects.get(participant_1_id=p1, participant_2_id=p2)
         except Conversation.DoesNotExist:
             return self.pagination_class().get_paginated_response([])
-
 
         queryset = ChatMessage.objects.filter(
             conversation=conversation

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.core.cache import cache  # Added for Redis API Hydration
 from .models import Conversation, ChatMessage, MediaAsset
 import math
 
@@ -61,7 +62,6 @@ class SendMessageInSerializer(serializers.Serializer):
 
 
 class SignBatchInSerializer(serializers.Serializer):
-
     upload_id = serializers.CharField(required=True)
     object_key = serializers.CharField(required=True)
     start_part = serializers.IntegerField(required=False, default=1, min_value=1)
@@ -94,7 +94,6 @@ class PrepareUploadIn(serializers.Serializer):
     batch_count = serializers.IntegerField(required=False, min_value=1, max_value=MAX_BATCH_COUNT)
 
     def validate(self, d):
-
         if d.get("upload_id"):
             if not d.get("object_key"):
                 raise serializers.ValidationError({"object_key": "Required with upload_id"})
@@ -117,11 +116,6 @@ class CompleteUploadIn(serializers.Serializer):
         if data.get("parts") and not data.get("upload_id"):
             raise serializers.ValidationError("upload_id required for multipart completion")
         return data
-    
-    
-    
-
-
 
 
 class UserSimpleSerializer(serializers.ModelSerializer):
@@ -192,13 +186,8 @@ class ChatListSerializer(serializers.ModelSerializer):
             
         return ""
     
-    
-    
-
-
 
 class MediaAssetSerializer(serializers.ModelSerializer):
-
     url = serializers.CharField(read_only=True)
     thumbnail_url = serializers.CharField(read_only=True)
 
@@ -209,6 +198,33 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             'width', 'height', 'duration_seconds', 
             'file_name', 'file_size', 'processing_status'
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        
+        # 🚀 API HYDRATION: Fetch live data from Redis if it's currently processing
+        if instance.processing_status in ['running', 'queued']:
+            progress_key = f"asset_progress:{instance.id}"
+            checkpoint_key = f"video_checkpoint:{instance.id}"
+            
+            # Fetch live progress
+            live_progress = cache.get(progress_key)
+            if live_progress is not None:
+                data['progress'] = live_progress
+                
+            # Fetch live thumbnail/variants
+            live_checkpoint = cache.get(checkpoint_key)
+            if live_checkpoint and 'variants' in live_checkpoint:
+                live_variants = live_checkpoint['variants']
+                
+                # If thumbnail exists in redis but not DB yet
+                if 'thumbnail' in live_variants:
+                    # Temporarily attach to instance to utilize the model's property logic
+                    instance.variants = live_variants 
+                    data['thumbnail_url'] = instance.thumbnail_url
+
+        return data
+
 
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender = UserSimpleSerializer(read_only=True)
@@ -227,14 +243,12 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             'is_edited', 
             'is_forwarded', 
             'forward_source_name',
-            
 
             'reply_to',        
             'reply_metadata',
             
             'asset_count',     
             'media_assets',    
-            
 
             'is_me'
         ]
@@ -247,7 +261,6 @@ class ChatMessageSerializer(serializers.ModelSerializer):
     
     
 class MediaAssetPendingSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = MediaAsset
         fields = [
@@ -258,8 +271,6 @@ class MediaAssetPendingSerializer(serializers.ModelSerializer):
             'processing_status' 
         ]
         
-        
-
 
 class ChatMessagePendingSerializer(serializers.ModelSerializer):
     sender = UserSimpleSerializer(read_only=True)
@@ -282,10 +293,8 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
             'reply_to',        
             'reply_metadata',  
             
-
             'asset_count',     
             'media_assets',    
-            
 
             'is_me'
         ]
@@ -297,18 +306,9 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
         return False
 
 
-
-
-
-
 class ChatMessageListSerializer(serializers.ModelSerializer):
-
     sender_id = serializers.IntegerField(read_only=True)
-    
-
     media_assets = MediaAssetSerializer(many=True, read_only=True)
-    
-
     is_me = serializers.SerializerMethodField()
     
     class Meta:
@@ -323,15 +323,12 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
             'is_edited', 
             'is_forwarded', 
             'forward_source_name',
-            
 
             'reply_to',        
             'reply_metadata',  
             
-
             'asset_count',     
             'media_assets',    
-            
 
             'is_me'
         ]
@@ -343,7 +340,6 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
         return False
 
     def to_representation(self, instance):
-
         data = super().to_representation(instance)
         
         is_me = data.get('is_me')
@@ -354,7 +350,6 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
         if not is_me:
             raw_assets = data.get('media_assets', [])
             if raw_assets:
-                # Filter the list in Python (Fast)
                 filtered_assets = [
                     asset for asset in raw_assets 
                     if asset.get('processing_status') != 'failed'
@@ -362,20 +357,3 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
                 data['media_assets'] = filtered_assets
 
         return data
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
