@@ -61,11 +61,14 @@ def notify_message_event(payload: dict):
             if sync_redis_client.scard(viewing_key) > 0:
                 ChatMessage.objects.filter(id=message_id).update(status="seen")
                 
+                # Fetch conversation ID safely from payload
+                conv_id = data.get("conversation_id") or data.get("conversation")
+                
                 read_receipt = {
                     "type": "chat_read_receipt",
                     "data": {
                         "message_id": message_id,
-                        "conversation_id": data.get("conversation"), 
+                        "conversation_id": conv_id, 
                         "reader_id": receiver_id,
                         "last_read_id": message_id
                     }
@@ -77,10 +80,11 @@ def notify_message_event(payload: dict):
 # ----------------------------------------------------------------------------
 @shared_task(ignore_result=True, time_limit=10, expires=60)
 def mark_delivered_and_notify_senders(user_id):
+    # 🚀 FIX: Now grouping by conversation_id as well
     pending_groups = ChatMessage.objects.filter(
         receiver_id=user_id,
         status=ChatMessage.Status.SENT
-    ).values('sender_id').annotate(last_id=Max('id'))
+    ).values('sender_id', 'conversation_id').annotate(last_id=Max('id'))
 
     if not pending_groups: return
 
@@ -93,6 +97,7 @@ def mark_delivered_and_notify_senders(user_id):
         event = {
             "type": "chat_delivery_receipt",
             "data": {
+                "conversation_id": entry['conversation_id'], # 🚀 Added
                 "receiver_id": user_id,
                 "last_delivered_id": entry['last_id']
             }
@@ -139,6 +144,7 @@ def _finalize_asset(asset, msg, result_data):
             "success": True,
             "data": {
                 "id": msg.id,
+                "conversation_id": msg.conversation_id, # 🚀 Added
                 "status": new_status,
                 "media_assets": [{
                     "id": asset.id, 
@@ -152,10 +158,10 @@ def _finalize_asset(asset, msg, result_data):
             }
         }
         
-        # 🚀 SMART ROUTING: Always tell the Sender
+        # SMART ROUTING: Always tell the Sender
         _send_socket_update_directly(msg.sender_id, payload)
         
-        # 🚀 SMART ROUTING: STRICT SILENCE for Receiver unless viewing
+        # SMART ROUTING: STRICT SILENCE for Receiver unless viewing
         if sync_redis_client.scard(viewing_key) > 0:
             _send_socket_update_directly(msg.receiver_id, payload)
 
@@ -165,6 +171,7 @@ def _finalize_asset(asset, msg, result_data):
                 "type": "chat_read_receipt",
                 "data": {
                     "message_id": msg.id,
+                    "conversation_id": msg.conversation_id, # 🚀 Added
                     "reader_id": msg.receiver_id,
                     "last_read_id": msg.id
                 }
@@ -242,15 +249,16 @@ def process_video_task(self, asset_id):
                     "type": "chat_message_update",
                     "data": {
                         "id": msg.id, 
+                        "conversation_id": msg.conversation_id, # 🚀 Added
                         "status": msg.status,
                         "media_assets": [asset_data]
                     }
                 }
                 
-                # 🚀 SMART ROUTING: Always send to Sender
+                # SMART ROUTING: Always send to Sender
                 _send_socket_update_directly(msg.sender_id, update_payload)
                 
-                # 🚀 SMART ROUTING: Send to Receiver ONLY if viewing chat
+                # SMART ROUTING: Send to Receiver ONLY if viewing chat
                 viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
                 if sync_redis_client.scard(viewing_key) > 0:
                     _send_socket_update_directly(msg.receiver_id, update_payload)
@@ -269,6 +277,7 @@ def process_video_task(self, asset_id):
                 "type": "chat_message_update",
                 "data": {
                     "id": msg.id,
+                    "conversation_id": msg.conversation_id, # 🚀 Added
                     "status": msg.status,
                     "media_assets": [{
                         "id": asset.id,
@@ -279,7 +288,7 @@ def process_video_task(self, asset_id):
                 }
             }
             
-            # 🚀 SMART ROUTING
+            # SMART ROUTING
             _send_socket_update_directly(msg.sender_id, update_payload)
             viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
             if sync_redis_client.scard(viewing_key) > 0:
@@ -350,6 +359,7 @@ def process_audio_task(self, asset_id):
             "type": "chat_message_update", 
             "data": {
                 "id": msg.id, 
+                "conversation_id": msg.conversation_id, # 🚀 Added
                 "media_assets": [{"id": asset.id, "processing_status": "running"}]
             }
         })
@@ -375,6 +385,7 @@ def process_file_task(self, asset_id):
             "type": "chat_message_update", 
             "data": {
                 "id": msg.id, 
+                "conversation_id": msg.conversation_id, # 🚀 Added
                 "media_assets": [{"id": asset.id, "processing_status": "running"}]
             }
         })
@@ -426,6 +437,7 @@ def _handle_failure(asset_id, error):
             "success": False,
             "data": {
                 "id": msg.id,
+                "conversation_id": msg.conversation_id, # 🚀 Added
                 "status": msg.status,
                 "media_assets": [{
                     "id": asset.id,
@@ -434,7 +446,7 @@ def _handle_failure(asset_id, error):
             }
         }
         
-        # 🚀 SMART ROUTING: Apply strict silence on failures too
+        # SMART ROUTING: Apply strict silence on failures too
         _send_socket_update_directly(msg.sender_id, payload)
         
         viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
@@ -474,12 +486,13 @@ def cleanup_stuck_assets(self):
                 "type": "chat_message_update",
                 "data": {
                     "id": msg.id,
+                    "conversation_id": msg.conversation_id, # 🚀 Added
                     "status": msg.status,
                     "media_assets": failed_assets
                 }
             }
             
-            # 🚀 SMART ROUTING for cleanup script
+            # SMART ROUTING for cleanup script
             _send_socket_update_directly(msg.sender_id, payload)
             viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
             if sync_redis_client.scard(viewing_key) > 0:

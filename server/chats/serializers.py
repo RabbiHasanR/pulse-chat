@@ -235,6 +235,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
         model = ChatMessage
         fields = [
             'id', 
+            'conversation_id', # 🚀 Added
             'sender',          
             'content', 
             'message_type',
@@ -243,13 +244,10 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             'is_edited', 
             'is_forwarded', 
             'forward_source_name',
-
             'reply_to',        
             'reply_metadata',
-            
             'asset_count',     
             'media_assets',    
-
             'is_me'
         ]
 
@@ -281,6 +279,7 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
         model = ChatMessage
         fields = [
             'id', 
+            'conversation_id', # 🚀 Added
             'sender',          
             'content', 
             'message_type',
@@ -289,13 +288,10 @@ class ChatMessagePendingSerializer(serializers.ModelSerializer):
             'is_edited', 
             'is_forwarded', 
             'forward_source_name',
-
             'reply_to',        
             'reply_metadata',  
-            
             'asset_count',     
             'media_assets',    
-
             'is_me'
         ]
 
@@ -315,6 +311,7 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
         model = ChatMessage
         fields = [
             'id', 
+            'conversation_id', # 🚀 Added
             'sender_id',       
             'content', 
             'message_type',
@@ -323,13 +320,10 @@ class ChatMessageListSerializer(serializers.ModelSerializer):
             'is_edited', 
             'is_forwarded', 
             'forward_source_name',
-
             'reply_to',        
             'reply_metadata',  
-            
             'asset_count',     
             'media_assets',    
-
             'is_me'
         ]
 
