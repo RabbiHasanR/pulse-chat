@@ -48,7 +48,7 @@ def notify_message_event(payload: dict):
     
     if not sender_id or not receiver_id: return
 
-    # 1. Direct Push
+    # 1. Direct Push (Initial message creation goes to both)
     _send_socket_update_directly(sender_id, payload)
     _send_socket_update_directly(receiver_id, payload)
 
@@ -151,8 +151,13 @@ def _finalize_asset(asset, msg, result_data):
                 }]
             }
         }
-        _send_socket_update_directly(msg.receiver_id, payload)
+        
+        # 🚀 SMART ROUTING: Always tell the Sender
         _send_socket_update_directly(msg.sender_id, payload)
+        
+        # 🚀 SMART ROUTING: STRICT SILENCE for Receiver unless viewing
+        if sync_redis_client.scard(viewing_key) > 0:
+            _send_socket_update_directly(msg.receiver_id, payload)
 
         # 5. Read Receipt
         if new_status == 'seen' and msg.status != 'seen':
@@ -273,9 +278,12 @@ def process_video_task(self, asset_id):
                     }]
                 }
             }
-            # Send to both immediately on major state change
-            _send_socket_update_directly(msg.receiver_id, update_payload)
+            
+            # 🚀 SMART ROUTING
             _send_socket_update_directly(msg.sender_id, update_payload)
+            viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
+            if sync_redis_client.scard(viewing_key) > 0:
+                _send_socket_update_directly(msg.receiver_id, update_payload)
 
         processor = VideoProcessor(asset)
         master_key, thumb_key = processor.process(
@@ -337,7 +345,7 @@ def process_audio_task(self, asset_id):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
 
-        # Unified Schema
+        # Unified Schema (Only send "running" to Sender, Receiver doesn't need to know until done)
         _send_socket_update_directly(msg.sender_id, {
             "type": "chat_message_update", 
             "data": {
@@ -425,8 +433,13 @@ def _handle_failure(asset_id, error):
                 }]
             }
         }
-        _send_socket_update_directly(msg.receiver_id, payload)
+        
+        # 🚀 SMART ROUTING: Apply strict silence on failures too
         _send_socket_update_directly(msg.sender_id, payload)
+        
+        viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
+        if sync_redis_client.scard(viewing_key) > 0:
+            _send_socket_update_directly(msg.receiver_id, payload)
         
     except Exception as e:
         print(f"CRITICAL: Failed to handle failure: {e}")
@@ -455,7 +468,6 @@ def cleanup_stuck_assets(self):
                 msg.status = 'failed'
                 msg.save()
             
-            # Unified schema for cleanup notifications
             failed_assets = [{"id": a.id, "processing_status": "failed"} for a in msg.media_assets.all() if a.processing_status == "failed"]
             
             payload = {
@@ -466,8 +478,12 @@ def cleanup_stuck_assets(self):
                     "media_assets": failed_assets
                 }
             }
+            
+            # 🚀 SMART ROUTING for cleanup script
             _send_socket_update_directly(msg.sender_id, payload)
-            _send_socket_update_directly(msg.receiver_id, payload)
+            viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
+            if sync_redis_client.scard(viewing_key) > 0:
+                _send_socket_update_directly(msg.receiver_id, payload)
 
         return f"Cleaned {len(stuck_assets)} assets"
 
