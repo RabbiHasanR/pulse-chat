@@ -231,6 +231,7 @@ class ChatService:
             # Generate S3 Params (Reuse your S3 logic here)
             params = ChatService._generate_s3_params(asset, item, object_key)
             params["asset_id"] = asset.id
+            params["object_key"] = object_key
             upload_instructions.append(params)
 
         # F. Update Conv & Broadcast
