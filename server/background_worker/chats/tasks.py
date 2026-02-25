@@ -80,7 +80,6 @@ def notify_message_event(payload: dict):
 # ----------------------------------------------------------------------------
 @shared_task(ignore_result=True, time_limit=10, expires=60)
 def mark_delivered_and_notify_senders(user_id):
-    # 🚀 FIX: Now grouping by conversation_id as well
     pending_groups = ChatMessage.objects.filter(
         receiver_id=user_id,
         status=ChatMessage.Status.SENT
@@ -97,7 +96,7 @@ def mark_delivered_and_notify_senders(user_id):
         event = {
             "type": "chat_delivery_receipt",
             "data": {
-                "conversation_id": entry['conversation_id'], # 🚀 Added
+                "conversation_id": entry['conversation_id'], 
                 "receiver_id": user_id,
                 "last_delivered_id": entry['last_id']
             }
@@ -114,6 +113,7 @@ def _finalize_asset(asset, msg, result_data):
             asset.object_key = result_data.get("object_key", asset.object_key)
             if "width" in result_data: asset.width = result_data["width"]
             if "height" in result_data: asset.height = result_data["height"]
+            if "duration_seconds" in result_data: asset.duration_seconds = result_data["duration_seconds"] # 🚀 Added
             if "file_size" in result_data: asset.file_size = result_data["file_size"]
             existing_vars = asset.variants or {}
             existing_vars.update(result_data.get("variants", {}))
@@ -144,7 +144,7 @@ def _finalize_asset(asset, msg, result_data):
             "success": True,
             "data": {
                 "id": msg.id,
-                "conversation_id": msg.conversation_id, # 🚀 Added
+                "conversation_id": msg.conversation_id,
                 "status": new_status,
                 "media_assets": [{
                     "id": asset.id, 
@@ -152,8 +152,12 @@ def _finalize_asset(asset, msg, result_data):
                     "processing_status": "done",
                     "url": asset.url,
                     "thumbnail_url": asset.thumbnail_url,
+                    
+                    # 🚀 Guaranteed Sizing Data
+                    "file_size": asset.file_size,
                     "width": asset.width,
                     "height": asset.height,
+                    "duration_seconds": getattr(asset, 'duration_seconds', None)
                 }]
             }
         }
@@ -171,7 +175,7 @@ def _finalize_asset(asset, msg, result_data):
                 "type": "chat_read_receipt",
                 "data": {
                     "message_id": msg.id,
-                    "conversation_id": msg.conversation_id, # 🚀 Added
+                    "conversation_id": msg.conversation_id,
                     "reader_id": msg.receiver_id,
                     "last_read_id": msg.id
                 }
@@ -222,10 +226,14 @@ def process_video_task(self, asset_id):
             
             should_send = False
             
-            # Unified Schema Structure
+            # 🚀 Unified Schema Structure with sizing data
             asset_data = {
                 "id": asset.id,
-                "processing_status": "running"
+                "processing_status": "running",
+                "file_size": asset.file_size,
+                "width": asset.width,
+                "height": asset.height,
+                "duration_seconds": getattr(asset, 'duration_seconds', None)
             }
 
             if thumb_key:
@@ -249,16 +257,14 @@ def process_video_task(self, asset_id):
                     "type": "chat_message_update",
                     "data": {
                         "id": msg.id, 
-                        "conversation_id": msg.conversation_id, # 🚀 Added
+                        "conversation_id": msg.conversation_id, 
                         "status": msg.status,
                         "media_assets": [asset_data]
                     }
                 }
                 
-                # SMART ROUTING: Always send to Sender
+                # SMART ROUTING
                 _send_socket_update_directly(msg.sender_id, update_payload)
-                
-                # SMART ROUTING: Send to Receiver ONLY if viewing chat
                 viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
                 if sync_redis_client.scard(viewing_key) > 0:
                     _send_socket_update_directly(msg.receiver_id, update_payload)
@@ -277,13 +283,19 @@ def process_video_task(self, asset_id):
                 "type": "chat_message_update",
                 "data": {
                     "id": msg.id,
-                    "conversation_id": msg.conversation_id, # 🚀 Added
+                    "conversation_id": msg.conversation_id, 
                     "status": msg.status,
                     "media_assets": [{
                         "id": asset.id,
                         "url": asset.url,
                         "processing_status": "done",
                         "progress": 100,
+                        
+                        # 🚀 Guaranteed Sizing Data
+                        "file_size": asset.file_size,
+                        "width": asset.width,
+                        "height": asset.height,
+                        "duration_seconds": getattr(asset, 'duration_seconds', None)
                     }]
                 }
             }
@@ -301,8 +313,12 @@ def process_video_task(self, asset_id):
             on_playable_callback=on_playable
         )
         
+        # 🚀 Pass dimensions to the finalizer
         result_data = {
             "object_key": master_key, 
+            "width": asset.width,
+            "height": asset.height,
+            "duration_seconds": getattr(asset, 'duration_seconds', None),
             "variants": {
                 "type": "hls", 
                 "master": master_key, 
@@ -354,12 +370,11 @@ def process_audio_task(self, asset_id):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
 
-        # Unified Schema (Only send "running" to Sender, Receiver doesn't need to know until done)
         _send_socket_update_directly(msg.sender_id, {
             "type": "chat_message_update", 
             "data": {
                 "id": msg.id, 
-                "conversation_id": msg.conversation_id, # 🚀 Added
+                "conversation_id": msg.conversation_id, 
                 "media_assets": [{"id": asset.id, "processing_status": "running"}]
             }
         })
@@ -380,12 +395,11 @@ def process_file_task(self, asset_id):
         asset = MediaAsset.objects.select_related("message").get(id=asset_id)
         msg = asset.message
         
-        # Unified Schema
         _send_socket_update_directly(msg.sender_id, {
             "type": "chat_message_update", 
             "data": {
                 "id": msg.id, 
-                "conversation_id": msg.conversation_id, # 🚀 Added
+                "conversation_id": msg.conversation_id, 
                 "media_assets": [{"id": asset.id, "processing_status": "running"}]
             }
         })
@@ -431,13 +445,12 @@ def _handle_failure(asset_id, error):
                 msg.status = 'sent'
                 msg.save(update_fields=['status'])
 
-        # Unified Schema Event
         payload = {
             "type": "chat_message_update",
             "success": False,
             "data": {
                 "id": msg.id,
-                "conversation_id": msg.conversation_id, # 🚀 Added
+                "conversation_id": msg.conversation_id,
                 "status": msg.status,
                 "media_assets": [{
                     "id": asset.id,
@@ -446,7 +459,6 @@ def _handle_failure(asset_id, error):
             }
         }
         
-        # SMART ROUTING: Apply strict silence on failures too
         _send_socket_update_directly(msg.sender_id, payload)
         
         viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
@@ -486,13 +498,12 @@ def cleanup_stuck_assets(self):
                 "type": "chat_message_update",
                 "data": {
                     "id": msg.id,
-                    "conversation_id": msg.conversation_id, # 🚀 Added
+                    "conversation_id": msg.conversation_id,
                     "status": msg.status,
                     "media_assets": failed_assets
                 }
             }
             
-            # SMART ROUTING for cleanup script
             _send_socket_update_directly(msg.sender_id, payload)
             viewing_key = RedisKeys.viewing(msg.receiver_id, msg.sender_id)
             if sync_redis_client.scard(viewing_key) > 0:
