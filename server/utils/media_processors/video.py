@@ -49,6 +49,13 @@ class VideoProcessor:
             # 2. Metadata Probe
             metadata = self._get_metadata(input_url)
             
+            # 🚀 FIX: Attach metadata to the in-memory asset immediately!
+            # This ensures tasks.py can push the exact dimensions to the UI instantly,
+            # preventing UI layout shifts.
+            self.asset.width = metadata['width']
+            self.asset.height = metadata['height']
+            self.asset.duration_seconds = metadata['duration']
+            
             # 3. Thumbnail Generation (Resume Check)
             current_vars = self.asset.variants or {}
             thumb_key = current_vars.get('thumbnail')
