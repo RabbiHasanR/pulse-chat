@@ -49,7 +49,7 @@ class FFmpegProgressTracker:
                         break
                     buffer += data.decode('utf-8', errors='ignore')
                     
-                    # Process complete lines
+                    
                     while '\n' in buffer:
                         line, buffer = buffer.split('\n', 1)
                         self._parse_line(line)
