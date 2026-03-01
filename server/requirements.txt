@@ -1,7 +1,12 @@
 Django>=6.0
 psycopg2>=2.9.11
 djangorestframework>=3.16.0
-celery>=5.5.3
+
+# --- STABILIZED CELERY DEPENDENCIES ---
+celery>=5.4.0,<5.6.0
+kombu>=5.4.0,<5.6.0
+
+
 redis>=7.1.0
 channels>=4.2.2
 channels-redis>=4.2.1
@@ -12,10 +17,11 @@ gunicorn>=23.0.0
 pillow>=12.0.0
 django-redis>=6.0.0
 daphne>=4.2.1
-moto==5.0.0 
+moto[s3]>=5.0.0
 ffmpeg-python>=0.2.0
 python-magic>=0.4.27
 pdf2image>=1.17.0
+numpy>=2.1.0
 
 # --- TESTING DEPENDENCIES ---
 # Downgraded to 8.x to resolve conflict
