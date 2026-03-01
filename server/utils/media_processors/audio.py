@@ -62,7 +62,7 @@ class AudioProcessor:
                 logger.debug(f"PCM strategy: temp file (duration={duration:.1f}s > {PCM_MEMORY_DURATION_THRESHOLD_SECS}s)")
 
             stream = ffmpeg.input(input_url)
-            split = stream.audio.split()
+            split = stream.audio.asplit()
 
             m4a_out = split[0].output(
                 output_path,
