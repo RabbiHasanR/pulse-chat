@@ -37,43 +37,7 @@ def _send_socket_update_directly(user_id, payload):
     except Exception as e:
         print(f"⚠️ Direct Socket Push Failed: {e}")
 
-@shared_task(queue='default', ignore_result=True)
-def notify_message_event(payload: dict):
-    """
-    Used by HTTP Views to send the initial "New Message" signal asynchronously.
-    """
-    data = payload.get("data", {})
-    sender_id = data.get("sender_id")
-    receiver_id = data.get("receiver_id")
-    
-    if not sender_id or not receiver_id: return
 
-    # 1. Direct Push (Initial message creation goes to both)
-    _send_socket_update_directly(sender_id, payload)
-    _send_socket_update_directly(receiver_id, payload)
-
-    # 2. "Seen" Logic
-    message_id = data.get("message_id")
-    if message_id and data.get("status") == "sent":
-        is_online = sync_redis_client.sismember(RedisKeys.ONLINE_USERS, receiver_id)
-        if is_online:
-            viewing_key = RedisKeys.viewing(receiver_id, sender_id)
-            if sync_redis_client.scard(viewing_key) > 0:
-                ChatMessage.objects.filter(id=message_id).update(status="seen")
-                
-                # Fetch conversation ID safely from payload
-                conv_id = data.get("conversation_id") or data.get("conversation")
-                
-                read_receipt = {
-                    "type": "chat_read_receipt",
-                    "data": {
-                        "message_id": message_id,
-                        "conversation_id": conv_id, 
-                        "reader_id": receiver_id,
-                        "last_read_id": message_id
-                    }
-                }
-                _send_socket_update_directly(sender_id, read_receipt)
 
 # ----------------------------------------------------------------------------
 # 2. MARK DELIVERED (On User Connect)

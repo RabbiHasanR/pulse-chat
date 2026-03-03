@@ -21,7 +21,6 @@ from .serializers import (
     ChatMessageListSerializer
 )
 from background_worker.chats.tasks import (
-    notify_message_event,
     process_video_task,
     process_image_task,
     process_audio_task,
