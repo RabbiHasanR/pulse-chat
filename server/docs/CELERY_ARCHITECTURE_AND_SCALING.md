@@ -45,6 +45,32 @@ Here is what this line tells Celery/Kombu to set up:
 
 
 
+### 4. How `task.delay()` Actually Works (The Lifecycle)
+
+When you call `process_video_task.delay(55)` in your Django views, here is the exact microsecond-by-microsecond lifecycle of what happens under the hood:
+
+1. **The Trigger (`.delay()`):** Django tells Celery to run `process_video_task` with the argument `asset_id=55`. Celery packages this request into a JSON message (the envelope).
+2. **The Router (`task_routes`):** Before the envelope leaves Django, Celery checks your `app.conf.task_routes` dictionary. It looks up the task name and sees `{'queue': 'video_queue'}`. It now knows the destination.
+3. **The Kombu Messenger (`task_queues`):** Celery passes the envelope to Kombu. Kombu checks `app.conf.task_queues` to figure out *how* to get to `video_queue`. It sees it needs to go to the `media` Exchange with the `video` routing key.
+4. **The Broker (Redis/RabbitMQ):** Kombu delivers the envelope to the Message Broker.
+* *If using RabbitMQ:* The real Exchange inside RabbitMQ reads the `video` routing key and drops it into the `video_queue`.
+* *If using Redis:* Because Redis doesn't have real Exchanges, Kombu does the math in Django's memory, bypasses the Exchange concept entirely, and directly pushes the message into the Redis List named `video_queue` using an `LPUSH` command.
+
+
+5. **The Worker Execution:** A Celery worker process that was started specifically to listen to that queue (`celery -A app worker -Q video_queue`) sees the new message pop up in Redis. It grabs it, deserializes the JSON, and starts running your FFmpeg Python code.
+
+---
+
+### 5. RabbitMQ vs Redis Exchanges (The "Magic Trick")
+
+As hinted in Step 4, the code works for BOTH RabbitMQ and Redis, but they achieve it in completely different ways.
+
+* **RabbitMQ (The "Real" Exchange):** RabbitMQ is a native AMQP broker. It actually has a component called an "Exchange." It receives the message once and internally copies it to all bound queues.
+* **Redis (The "Fake" Exchange):** Redis is a Key-Value store. It only has Lists and Pub/Sub. When you use Redis, **Kombu simulates the Exchange**. For standard queues, it uses Redis **Lists** (`RPUSH`/`LPOP`). For Fanout/Broadcast exchanges, Kombu switches to using Redis **Pub/Sub** channels, where workers `SUBSCRIBE` to a channel.
+
+**Bottom Line:** You do not need to install RabbitMQ. Using `Exchange()` allows you to write standard code that works beautifully on Redis today, but allows you to seamlessly switch to RabbitMQ tomorrow without changing your Django code.
+
+
 
 
 
