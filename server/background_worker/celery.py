@@ -18,7 +18,6 @@ app.conf.task_queues = (
 )
 
 app.conf.task_routes = {
-    
     'background_worker.chats.tasks.process_video_task': {'queue': 'video_queue'},
     'background_worker.chats.tasks.process_image_task': {'queue': 'image_queue'},
     'background_worker.chats.tasks.process_audio_task': {'queue': 'audio_queue'},
