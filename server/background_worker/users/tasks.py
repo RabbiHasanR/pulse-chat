@@ -28,3 +28,9 @@ def send_templated_email_task(self, subject, to_email, template_name, context):
     except Exception as exc:
         # If an unexpected error happens, trigger the retry logic
         raise self.retry(exc=exc)
+    
+    
+    
+    
+    
+    
