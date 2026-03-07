@@ -40,13 +40,10 @@ class InitAvatarUploadIn(serializers.Serializer):
     file_size = serializers.IntegerField()
 
     def validate_content_type(self, value):
-        # 1. Allow ANY image format (jpeg, png, gif, webp, heic, etc.)
         if not value.startswith("image/"):
             raise serializers.ValidationError("Invalid format. File must be an image.")
         
-        # 2. SECURITY BLOCK: SVG
-        # SVGs can contain executable Javascript (XSS attacks). 
-        # Never allow users to upload SVGs as avatars.
+
         if value == "image/svg+xml":
              raise serializers.ValidationError("SVG images are not allowed for security reasons.")
              
