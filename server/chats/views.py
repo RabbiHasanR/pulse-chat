@@ -130,7 +130,7 @@ class CompleteUpload(APIView):
         asset.processing_status = "running"
         asset.save(update_fields=['processing_status'])
 
-        # 5. Route to correct Queue
+
         if asset.kind == MediaAsset.Kind.VIDEO:
             process_video_task.delay(asset.id)
         elif asset.kind == MediaAsset.Kind.IMAGE:
