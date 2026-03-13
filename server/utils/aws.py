@@ -32,7 +32,6 @@ if USE_S3_MOCK:
         s3.create_bucket(Bucket=AWS_BUCKET)
         print(f"✅ [MOCK] Bucket '{AWS_BUCKET}' created on {endpoint}")
     except Exception as e:
-        # Ignore if it already exists
         pass
 
 else:
