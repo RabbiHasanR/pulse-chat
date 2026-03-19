@@ -1,33 +1,31 @@
 from rest_framework.pagination import CursorPagination
 from utils.response import success_response
 
-class ContactCursorPagination(CursorPagination):
+class BaseCursorPagination(CursorPagination):
     page_size = 10
-    ordering = '-created_at'
-    
-    def get_paginated_response(self, data):
-        return success_response(
-            message="Contacts retrieved successfully",
-            data={
-                "contacts": data,
-                "next": self.get_next_link(),
-                "previous": self.get_previous_link()
-            },
-            status=200
-        )
-    
 
-class UserCursorPagination(CursorPagination):
-    page_size = 10
-    ordering = '-date_joined'
-    
+    data_key: str = None
+    success_message: str = None
+
     def get_paginated_response(self, data):
         return success_response(
-            message="Users retrieved successfully",
+            message=self.success_message,
             data={
-                "users": data,
+                self.data_key: data,
                 "next": self.get_next_link(),
                 "previous": self.get_previous_link()
             },
             status=200
         )
+
+
+class ContactCursorPagination(BaseCursorPagination):
+    ordering = '-created_at'
+    data_key = 'contacts'
+    success_message = 'Contacts retrieved successfully'
+
+
+class UserCursorPagination(BaseCursorPagination):
+    ordering = '-date_joined'
+    data_key = 'users'
+    success_message = 'Users retrieved successfully'
