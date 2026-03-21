@@ -1,36 +1,14 @@
-from rest_framework.pagination import CursorPagination
-from utils.response import success_response
+from utils.pagination import BaseCursorPagination
 
-class ChatListCursorPagination(CursorPagination):
+class ChatListCursorPagination(BaseCursorPagination):
     page_size = 20
-
-    ordering = '-updated_at' 
-    
-    def get_paginated_response(self, data):
-
-        return success_response(
-            message="Chats retrieved successfully",
-            data={
-                "conversations": data,
-                "next": self.get_next_link(),
-                "previous": self.get_previous_link()
-            },
-            status=200
-        )
-        
+    ordering = '-updated_at'
+    data_key = 'conversations'
+    success_message = 'Chats retrieved successfully'
 
 
-class MessageCursorPagination(CursorPagination):
+class MessageCursorPagination(BaseCursorPagination):
     page_size = 30
     ordering = '-created_at'
-    
-    def get_paginated_response(self, data):
-        return success_response(
-            message="Messages retrieved successfully",
-            data={
-                "messages": data,
-                "next": self.get_next_link(),
-                "previous": self.get_previous_link()
-            },
-            status=200
-        )
+    data_key = 'messages'
+    success_message = 'Messages retrieved successfully'
