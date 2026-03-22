@@ -1,6 +1,5 @@
 import uuid
 import mimetypes
-from django.conf import settings
 from utils.s3 import s3, AWS_BUCKET, DEFAULT_EXPIRES_DIRECT, generate_presigned_url
 
 class AvatarService:
