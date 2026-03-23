@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import logging
 import magic
-import ffmpeg # pip install ffmpeg-python
+import ffmpeg
 from utils.aws import s3, AWS_BUCKET
 from .ffmpeg_progress import FFmpegProgressTracker
 

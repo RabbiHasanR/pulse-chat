@@ -1,7 +1,6 @@
 import os
 import uuid
 import boto3
-from django.conf import settings
 
 # Get Env Vars
 AWS_REGION = os.getenv("AWS_S3_REGION_NAME", "us-east-1")

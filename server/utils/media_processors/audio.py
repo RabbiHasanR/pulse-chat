@@ -1,10 +1,10 @@
 import os
-import magic   # pip install python-magic
-import ffmpeg  # pip install ffmpeg-python
+import magic   
+import ffmpeg  
 import logging
 import tempfile
 import shutil
-import numpy as np  # pip install numpy
+import numpy as np 
 from concurrent.futures import ThreadPoolExecutor
 from utils.aws import s3
 
