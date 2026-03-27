@@ -4,7 +4,7 @@ from django.db.models import Q, Case, When, F
 from django.contrib.auth import get_user_model
 
 from asgiref.sync import async_to_sync
-from botocore.exceptions import ClientError  # Added for S3 error handling
+from botocore.exceptions import ClientError
 
 from utils.response import success_response, error_response
 from utils.aws import s3, AWS_BUCKET, new_object_key
