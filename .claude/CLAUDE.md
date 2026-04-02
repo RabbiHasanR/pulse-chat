@@ -37,9 +37,3 @@ docker-compose logs -f celery_video
 ## Environment
 
 All services read config from `.env` at the project root. Never commit this file — it contains secrets. Add new variables to `.env` and document them in `docs/` for contributors.
-
-## Commit Scopes
-
-Global conventions are in `~/.claude/CLAUDE.md`. Project-specific scopes:
-
-`server`, `database`, `chats`, `users`, `channel`, `background_worker`, `middlewares`, `utils`, `core`, `docs`, `ci`
