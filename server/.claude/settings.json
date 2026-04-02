@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; if [[ \"$f\" == *.py ]]; then python3 -m py_compile \"$f\" 2>&1 && echo \"[syntax-check] OK: $f\" || echo \"[syntax-check] ERROR: $f\"; fi; } 2>/dev/null || true",
+            "statusMessage": "Checking Python syntax..."
+          }
+        ]
+      }
+    ]
+  }
+}
