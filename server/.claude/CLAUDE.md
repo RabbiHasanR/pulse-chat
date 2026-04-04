@@ -75,3 +75,22 @@ Async tests need `@pytest.mark.asyncio`.
 - **ViewSets** — project uses `APIView` consistently
 - **`.all()` without filtering** on large tables (`ChatMessage`, `Conversation`)
 - **Missing `select_related`** on FK fields in list queries
+
+## Testing Conventions
+
+File locations: `tests/<app>/test_<views|tasks|consumers>.py`
+
+Fixture combos by scenario:
+
+| Scenario | Fixtures |
+| --- | --- |
+| REST endpoint | `auth_client` |
+| WebSocket consumer | `patch_redis` + `fake_redis` + `helpers` + `@pytest.mark.asyncio` |
+| Celery task | `patch_global_s3_client` + `fake_redis` |
+| Media task | `patch_global_s3_client` + `fake_redis` + `media_asset` |
+| Middleware | `mock_request` + `issue_bound_token` |
+
+Naming: `test_<action>_<condition>` — e.g. `test_send_message_unauthorized`, `test_process_image_s3_error`
+
+Use URL constants from `tests/constants.py`, never hardcode paths.
+Minimum cases per endpoint: happy path + missing/invalid fields + unauthorized.
