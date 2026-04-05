@@ -27,13 +27,7 @@ Offer 2–3 implementation approaches with:
 - Which project patterns each approach uses or extends
 
 ## Step 4 — Flag Constraints
-Always check the idea against:
-- Pagination: cursor only, never offset
-- Redis keys: `RedisKeys` class, no raw strings
-- S3: `utils/s3.py` only
-- WebSocket dispatch: `ChatRedisService`, not direct `channel_layer.group_send` in views
-- Views: `APIView` + service layer, no logic in view
-- Celery: `acks_late`, `bind`, `max_retries`, `soft_time_limit`
+Check the proposed approach against every rule in the **Anti-Patterns** section of `server/.claude/CLAUDE.md`. Flag any that apply.
 
 ## Step 5 — Recommend & Sequence
 State the recommended approach and why.

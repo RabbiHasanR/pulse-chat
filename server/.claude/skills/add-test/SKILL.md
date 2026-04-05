@@ -8,12 +8,8 @@ Write tests for a specific piece of code. Follow steps in order.
 $ARGUMENTS: what to test (e.g. "SendMessageView", "process_image_task", "UserSocketConsumer chat_open event")
 
 ## Step 1 — Clarify Type
-What are we testing?
-- **REST view** → uses `auth_client`
-- **WebSocket consumer** → uses `patch_redis` + `fake_redis` + `helpers` + `@pytest.mark.asyncio`
-- **Celery task** → uses `patch_global_s3_client` + `fake_redis`
-- **Media task** → above + `media_asset`
-- **Middleware** → uses `mock_request` + `issue_bound_token`
+What are we testing? (REST view / WebSocket consumer / Celery task / Media task / Middleware)
+Select the fixture combo from the **Testing Conventions** table in `server/.claude/CLAUDE.md`.
 
 ## Step 2 — Locate the Code
 Read the file being tested to understand inputs, outputs, and failure paths.

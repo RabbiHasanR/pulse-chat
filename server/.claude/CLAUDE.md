@@ -34,21 +34,13 @@ Django REST + Channels backend for Pulse Chat. Loaded alongside global and root 
 5. URL in `<app>/urls.py` — kebab-case, no trailing slash
 6. Tests: happy path, missing fields, unauthorized
 
-### New Celery task — required config every time
-```python
-@shared_task(
-    bind=True,
-    acks_late=True,
-    max_retries=3,
-    soft_time_limit=<N>,
-    time_limit=<N+60>,
-    queue='<queue>'
-)
-def my_task(self, resource_id: int) -> None:
-```
+### New Celery task
+
+- Required config: `bind=True`, `acks_late=True`, `max_retries`, `soft_time_limit`, `time_limit` (> soft)
 - Pass IDs, not objects (JSON serialization)
 - Register in `task_routes` in `background_worker/celery.py`
 - Queues: `default`, `image_queue`, `audio_queue`, `file_queue`, `video_queue` (FFmpeg only)
+- Use `/add-celery-task` skill for the full guided template
 
 ## Test Fixtures (`tests/conftest.py`)
 
