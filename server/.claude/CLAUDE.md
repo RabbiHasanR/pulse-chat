@@ -27,12 +27,11 @@ Django REST + Channels backend for Pulse Chat. Loaded alongside global and root 
 ## Patterns
 
 ### New REST endpoint
-1. Model change + migration (if needed)
-2. Serializer in `<app>/serializers.py`
-3. Business logic in `<app>/services.py` — never in the view
-4. View in `<app>/views.py` — `APIView` subclass, `permission_classes = [IsAuthenticated]`
-5. URL in `<app>/urls.py` — kebab-case, no trailing slash
-6. Tests: happy path, missing fields, unauthorized
+
+- Logic in `<app>/services.py`, never in the view
+- View: `APIView` subclass, `permission_classes = [IsAuthenticated]`
+- URL: kebab-case, no trailing slash
+- Use `/add-endpoint` skill for the full guided workflow
 
 ### New Celery task
 
