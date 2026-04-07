@@ -52,14 +52,16 @@ Implement variants one at a time. For each:
 Wait for approval after each variant before moving to the next.
 
 ## Step 6 — Generate Docs
-Write `docs/<concept>.md` with:
-- Introduction: why this concept matters
-- Variants table: name | complexity | best for | trade-offs
-- Per-variant section: explanation + code snippet from this project + when to use
-- Comparison: side-by-side summary
-- Further reading (concepts, not URLs)
+Write `docs/<concept>.md`. Use the actual code written in Step 5 for all snippets — do not write generic examples.
 
-Show draft. Wait for approval before writing.
+Structure:
+- **Introduction** — why this concept matters and where it appears in real systems
+- **Variants table** — name | complexity | best for | trade-offs
+- **Per-variant section** — explanation + the actual implementation from this project + when to use it
+- **Comparison** — side-by-side summary of all variants
+- **Further reading** — concepts and terms to search, not URLs
+
+Show draft. Wait for approval before writing the file.
 
 ## Step 7 — Verify
 Run `/test` scoped to the affected app to confirm all new tests pass.
