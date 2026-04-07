@@ -296,3 +296,43 @@ class ChatMessageListView(APIView):
         
         serializer = ChatMessageListSerializer(page, many=True, context={'request': request})
         return paginator.get_paginated_response(serializer.data)
+
+
+# --- LEARNING: Offset Pagination ---
+# Simplest form of pagination. Skips N rows and returns the next M.
+# Problem: at large offsets the DB scans all skipped rows before returning results.
+# Problem: page drift — if a new message is inserted between requests, page 2 repeats an item.
+class MessageOffsetListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            offset = max(int(request.query_params.get('offset', 0)), 0)
+            limit = min(int(request.query_params.get('limit', 20)), 100)
+        except (ValueError, TypeError):
+            return error_response("offset and limit must be integers", status=400)
+
+        queryset = ChatMessage.objects.filter(
+            Q(sender=request.user) | Q(receiver=request.user)
+        ).order_by('-created_at')
+
+        # COUNT(*) runs here — fine for small tables, expensive at scale
+        total = queryset.count()
+
+        # DB scans and discards `offset` rows before returning `limit`
+        messages = queryset[offset: offset + limit]
+
+        serializer = ChatMessageListSerializer(messages, many=True, context={'request': request})
+
+        return success_response(
+            message="Messages retrieved (offset pagination)",
+            data={
+                "results": serializer.data,
+                "pagination": {
+                    "total": total,
+                    "offset": offset,
+                    "limit": limit,
+                    "has_next": (offset + limit) < total,
+                },
+            },
+        )
