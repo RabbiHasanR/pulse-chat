@@ -46,8 +46,6 @@ Show plan. Wait for approval before writing any code.
 Implement variants one at a time. For each:
 1. Write the code
 2. Add URL to `<app>/urls.py`
-3. Add URL constant to `tests/constants.py`
-4. Write a basic test
 
 Wait for approval after each variant before moving to the next.
 
@@ -63,5 +61,3 @@ Structure:
 
 Show draft. Wait for approval before writing the file.
 
-## Step 7 — Verify
-Run `/test` scoped to the affected app to confirm all new tests pass.
