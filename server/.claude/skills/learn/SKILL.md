@@ -7,13 +7,22 @@ Explore and implement all variants of a system design concept in this project.
 
 $ARGUMENTS: the concept to explore (e.g. "pagination types", "caching strategies", "message queue patterns", "rate limiting approaches")
 
-## Step 1 — Scope
+## Step 1 — Branch
+Before any code is written, create a dedicated git branch:
+```
+git checkout -b learn/<concept-slug>
+```
+Example: `learn/caching-strategies`, `learn/pagination-types`, `learn/rate-limiting`
+
+The `master` branch is production. All learning implementations stay on this branch. Confirm the branch is created before continuing.
+
+## Step 2 — Scope
 Ask if not already clear:
 - What concept are we exploring?
 - Any specific variants to include or skip?
-- Target doc file name? (default: `docs/<concept>.md`)
+- Target doc file name? (default: `docs/<concept>-comparision.md`)
 
-## Step 2 — Explain All Variants
+## Step 3 — Explain All Variants
 For each variant of the concept:
 - What it is (one paragraph)
 - How it works mechanically
@@ -23,7 +32,7 @@ For each variant of the concept:
 
 Present all variants. Wait for confirmation before continuing.
 
-## Step 3 — Map to This Project
+## Step 4 — Map to This Project
 For each variant, identify:
 - Which existing APIs or models are a natural fit
 - Which variant is already implemented (if any)
@@ -32,7 +41,7 @@ For each variant, identify:
 
 Show mapping. Wait for approval.
 
-## Step 4 — Implementation Plan
+## Step 5 — Implementation Plan
 For each variant:
 - Which file(s) change
 - What new files are needed (serializer, view, URL, migration)
@@ -42,14 +51,14 @@ For each variant:
 
 Show plan. Wait for approval before writing any code.
 
-## Step 5 — Implement
+## Step 6 — Implement
 Implement variants one at a time. For each:
 1. Write the code
 2. Add URL to `<app>/urls.py`
 
 Wait for approval after each variant before moving to the next.
 
-## Step 6 — Generate Docs
+## Step 7 — Generate Docs
 Write `docs/<concept>.md`. Use the actual code written in Step 5 for all snippets — do not write generic examples.
 
 Structure:
