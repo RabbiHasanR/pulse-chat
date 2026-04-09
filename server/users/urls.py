@@ -10,14 +10,12 @@ from .views import (
     GetContactsView,
     ExploreUsersView,
     UserAvatarView,
-    GetUserMeView,
-    UserPageListView,
-    ContactKeysetListView,
+    GetUserMeView
 )
 
 urlpatterns = [
     path('me/', GetUserMeView.as_view(), name='user-me'),
-
+    
     path("register/", RegisterUserView.as_view(), name="register"),
 
     path("send-otp/", SendOTPView.as_view(), name="send-otp"),
@@ -25,18 +23,15 @@ urlpatterns = [
     path("verify-otp/", VerifyOTPView.as_view(), name="verify-otp"),
 
     path("refresh-token/", CustomTokenRefreshView.as_view(), name="token-refresh"),
-
+    
     path("logout/", LogoutView.as_view(), name="logout"),
-
+    
     path('get-contacts/', GetContactsView.as_view(), name='get-contacts'),
-
+    
     path('add-contacts/', AddContactView.as_view(), name='add-contacts'),
-
+    
     path('explore-users/', ExploreUsersView.as_view(), name='explore-users'),
-
+    
     path('avatar/', UserAvatarView.as_view(), name='user-avatar'),
-
-    # Learning: pagination variants
-    path('users/page/', UserPageListView.as_view(), name='users-page'),
-    path('contacts/keyset/', ContactKeysetListView.as_view(), name='contacts-keyset'),
+    
 ]
