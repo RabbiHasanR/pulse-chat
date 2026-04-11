@@ -1,5 +1,8 @@
+import re
 from rest_framework import serializers
 from .models import ChatUser, Contact
+
+_AVATAR_KEY_RE = re.compile(r'^avatars/temp/user_\d+_[a-f0-9]+\.\w+$')
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -61,8 +64,8 @@ class InitAvatarUploadIn(serializers.Serializer):
 
 class ConfirmAvatarUploadIn(serializers.Serializer):
     object_key = serializers.CharField()
-    
-    def validate_object_key(self, value):
-        if ".." in value or value.startswith("/"):
+
+    def validate_object_key(self, value: str) -> str:
+        if not _AVATAR_KEY_RE.match(value):
             raise serializers.ValidationError("Invalid key format.")
         return value

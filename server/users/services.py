@@ -1,6 +1,7 @@
 import uuid
 import logging
 import mimetypes
+from django.core.cache import cache
 from utils.s3 import s3, AWS_BUCKET, DEFAULT_EXPIRES_DIRECT, generate_presigned_url
 
 logger = logging.getLogger(__name__)
@@ -9,14 +10,16 @@ logger = logging.getLogger(__name__)
 class AvatarService:
     @staticmethod
     def generate_avatar_upload_url(user, file_name, content_type):
-
         ext = mimetypes.guess_extension(content_type)
         if not ext:
             ext = ".bin"
-            
+
         unique_id = uuid.uuid4().hex
-        
         object_key = f"avatars/temp/user_{user.id}_{unique_id}{ext}"
+
+        # Cache the issued key so confirm_avatar_update can verify it exactly.
+        # TTL matches the presigned URL expiry so stale keys auto-expire.
+        cache.set(f"avatar_pending:{user.id}", object_key, timeout=DEFAULT_EXPIRES_DIRECT)
 
         put_url = generate_presigned_url(
             ClientMethod="put_object",
@@ -25,23 +28,23 @@ class AvatarService:
                 "Key": object_key,
                 "ContentType": content_type
             },
-            ExpiresIn=DEFAULT_EXPIRES_DIRECT # e.g. 300 seconds
+            ExpiresIn=DEFAULT_EXPIRES_DIRECT,
         )
 
         return {
             "upload_url": put_url,
-            "object_key": object_key
+            "object_key": object_key,
         }
 
     @staticmethod
     def confirm_avatar_update(user, temp_key):
+        pending_key = cache.get(f"avatar_pending:{user.id}")
+        if pending_key != temp_key:
+            raise ValueError("Invalid key: does not match the pending upload for this user.")
 
-        expected_prefix = f"avatars/temp/user_{user.id}_"
-        if not temp_key.startswith(expected_prefix):
-             raise ValueError("Invalid Key: You can only confirm your own uploads.")
-
-
-        new_key = temp_key.replace("avatars/temp/", "avatars/active/")
+        # Build active key from the unique portion — no fragile string replacement.
+        filename = temp_key.split("/")[-1]
+        new_key = f"avatars/active/{filename}"
 
 
         s3.copy_object(
@@ -63,8 +66,10 @@ class AvatarService:
                 # Non-critical: old avatar orphaned in S3. Log for cleanup audit.
                 logger.warning("Failed to delete old avatar key %s for user %s — orphaned in S3", user.avatar_key, user.id)
 
+        cache.delete(f"avatar_pending:{user.id}")
+
         user.avatar_bucket = AWS_BUCKET
         user.avatar_key = new_key
         user.save(update_fields=['avatar_bucket', 'avatar_key'])
-        
+
         return user.avatar_url
