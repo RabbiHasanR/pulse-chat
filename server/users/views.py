@@ -1,7 +1,10 @@
 import jwt
+import logging
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
+
+logger = logging.getLogger(__name__)
 from asgiref.sync import async_to_sync
 
 from rest_framework import status
@@ -163,7 +166,11 @@ class VerifyOTPView(APIView):
 
         cache.delete(attempts_key)
 
-        user = ChatUser.objects.get(email=email)
+        try:
+            user = ChatUser.objects.get(email=email)
+        except ChatUser.DoesNotExist:
+            return error_response(message="User not found", status=404)
+
         refresh = issue_token_for_user(user, request)
         return success_response(
             message="OTP verified",
@@ -386,10 +393,9 @@ class GetContactsView(APIView):
 
             return paginator.get_paginated_response(serializer.data)
 
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return error_response(message="Failed to retrieve contacts", errors=str(e), status=500)
+        except Exception:
+            logger.exception("Failed to retrieve contacts for user %s", request.user.id)
+            return error_response(message="Failed to retrieve contacts", status=500)
         
 
 
@@ -408,8 +414,9 @@ class ExploreUsersView(APIView):
 
             return paginator.get_paginated_response(serializer.data)
 
-        except Exception as e:
-            return error_response(message="Failed to retrieve users", errors=str(e), status=500)
+        except Exception:
+            logger.exception("Failed to retrieve users for user %s", request.user.id)
+            return error_response(message="Failed to retrieve users", status=500)
         
         
         
@@ -437,8 +444,8 @@ class UserAvatarView(APIView):
                 data=result,
                 status=200
             )
-        except Exception as e:
-            print(e)
+        except Exception:
+            logger.exception("Failed to generate avatar upload URL for user %s", request.user.id)
             return error_response(message="Failed to generate upload URL", status=500)
 
     def put(self, request):

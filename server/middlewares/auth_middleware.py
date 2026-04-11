@@ -8,8 +8,9 @@ class JWTClientBindingMiddleware:
 
     def __call__(self, request):
         auth = request.headers.get('Authorization', '')
-        if auth.startswith('Bearer '):
-            token = auth.split(' ')[1]
+        parts = auth.split(' ')
+        if parts[0] == 'Bearer' and len(parts) == 2:
+            token = parts[1]
             try:
                 decoded = AccessToken(token)
                 if not verify_token_signature(decoded, request):

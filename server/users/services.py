@@ -1,6 +1,10 @@
 import uuid
+import logging
 import mimetypes
 from utils.s3 import s3, AWS_BUCKET, DEFAULT_EXPIRES_DIRECT, generate_presigned_url
+
+logger = logging.getLogger(__name__)
+
 
 class AvatarService:
     @staticmethod
@@ -49,14 +53,15 @@ class AvatarService:
         try:
             s3.delete_object(Bucket=AWS_BUCKET, Key=temp_key)
         except Exception:
-            pass
-
+            # Non-critical: copy succeeded, DB will be updated. Log for S3 cleanup audit.
+            logger.warning("Failed to delete temp avatar key %s — orphaned in S3", temp_key)
 
         if user.avatar_key and user.avatar_key != new_key:
             try:
                 s3.delete_object(Bucket=AWS_BUCKET, Key=user.avatar_key)
             except Exception:
-                pass 
+                # Non-critical: old avatar orphaned in S3. Log for cleanup audit.
+                logger.warning("Failed to delete old avatar key %s for user %s — orphaned in S3", user.avatar_key, user.id)
 
         user.avatar_bucket = AWS_BUCKET
         user.avatar_key = new_key
