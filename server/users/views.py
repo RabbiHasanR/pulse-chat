@@ -143,12 +143,25 @@ class VerifyOTPView(APIView):
             )
 
         cached_otp = cache.get(f"otp_{email}")
+        attempts_key = f"otp_attempts:{email}"
+        attempts = cache.get(attempts_key, 0)
+
+        if attempts >= 3:
+            cache.delete(f"otp_{email}")
+            return error_response(
+                message="Too many failed attempts. Please request a new OTP.",
+                status=429
+            )
+
         if cached_otp != otp:
+            cache.set(attempts_key, attempts + 1, timeout=300)
             return error_response(
                 message="Invalid OTP",
                 errors={"otp": ["OTP does not match"]},
                 status=400
             )
+
+        cache.delete(attempts_key)
 
         user = ChatUser.objects.get(email=email)
         refresh = issue_token_for_user(user, request)

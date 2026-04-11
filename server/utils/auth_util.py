@@ -1,10 +1,11 @@
 import jwt
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from django.conf import settings
 
-def generate_otp():
-    return str(random.randint(100000, 999999))
+
+def generate_otp() -> str:
+    return str(secrets.randbelow(900000) + 100000)
 
 
 def generate_email_token(email):
