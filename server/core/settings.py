@@ -255,3 +255,14 @@ if AWS_ACCESS_KEY_ID is None:
 
 # Silence drf-yasg deprecation warning
 SWAGGER_USE_COMPAT_RENDERERS = False
+
+SWAGGER_SETTINGS = {
+    'SECURITY_DEFINITIONS': {
+        'Bearer': {
+            'type': 'apiKey',
+            'name': 'Authorization',
+            'in': 'header',
+            'description': 'JWT access token. Format: Bearer <token>',
+        }
+    }
+}

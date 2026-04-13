@@ -271,7 +271,8 @@ class LogoutView(APIView):
             401: openapi.Response(description="Invalid or expired token")
         },
         operation_description="Blacklist refresh token to log out user",
-        tags=["Authentication"]
+        tags=["Authentication"],
+        security=[{"Bearer": []}]
     )
     def post(self, request):
         refresh_token = request.data.get("refresh")
@@ -307,6 +308,24 @@ class LogoutView(APIView):
 class AddContactView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'identifier': openapi.Schema(type=openapi.TYPE_STRING, description="Email or username of the user to add")
+            },
+            required=['identifier']
+        ),
+        responses={
+            201: openapi.Response(description="Contact added"),
+            200: openapi.Response(description="Already in contacts"),
+            400: openapi.Response(description="Validation error or self-addition"),
+            404: openapi.Response(description="User not found")
+        },
+        operation_description="Add a user as a contact by email or username",
+        tags=["Contacts"],
+        security=[{"Bearer": []}]
+    )
     def post(self, request):
         identifier = request.data.get('identifier')
 
@@ -366,6 +385,15 @@ class AddContactView(APIView):
 class GetContactsView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        responses={
+            200: openapi.Response(description="Paginated list of contacts with online status"),
+            500: openapi.Response(description="Server error")
+        },
+        operation_description="Get paginated contacts for the authenticated user, with real-time online status",
+        tags=["Contacts"],
+        security=[{"Bearer": []}]
+    )
     def get(self, request):
         try:
             contacts = Contact.objects.filter(owner=request.user)\
@@ -403,6 +431,15 @@ class GetContactsView(APIView):
 class ExploreUsersView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        responses={
+            200: openapi.Response(description="Paginated list of all users excluding self"),
+            500: openapi.Response(description="Server error")
+        },
+        operation_description="Browse all registered users (excludes self), paginated",
+        tags=["Users"],
+        security=[{"Bearer": []}]
+    )
     def get(self, request):
         try:
             users = ChatUser.objects.exclude(id=request.user.id)
@@ -426,6 +463,17 @@ class ExploreUsersView(APIView):
 class UserAvatarView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        request_body=InitAvatarUploadIn,
+        responses={
+            200: openapi.Response(description="Presigned upload URL generated"),
+            400: openapi.Response(description="Validation error"),
+            500: openapi.Response(description="Server error")
+        },
+        operation_description="Initialize an S3 presigned upload URL for the user's avatar",
+        tags=["Avatar"],
+        security=[{"Bearer": []}]
+    )
     def post(self, request):
         ser = InitAvatarUploadIn(data=request.data)
         if not ser.is_valid():
@@ -448,6 +496,17 @@ class UserAvatarView(APIView):
             logger.exception("Failed to generate avatar upload URL for user %s", request.user.id)
             return error_response(message="Failed to generate upload URL", status=500)
 
+    @swagger_auto_schema(
+        request_body=ConfirmAvatarUploadIn,
+        responses={
+            200: openapi.Response(description="Avatar updated successfully"),
+            400: openapi.Response(description="File missing or expired"),
+            403: openapi.Response(description="Key does not belong to this user")
+        },
+        operation_description="Confirm the avatar upload and apply it to the user's profile",
+        tags=["Avatar"],
+        security=[{"Bearer": []}]
+    )
     def put(self, request):
         ser = ConfirmAvatarUploadIn(data=request.data)
         if not ser.is_valid():
@@ -472,6 +531,14 @@ class UserAvatarView(APIView):
 class GetUserMeView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        responses={
+            200: openapi.Response(description="Authenticated user's profile", schema=UserSerializer())
+        },
+        operation_description="Get the authenticated user's own profile",
+        tags=["Users"],
+        security=[{"Bearer": []}]
+    )
     def get(self, request):
         serializer = UserSerializer(request.user)
         return success_response(
