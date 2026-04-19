@@ -42,14 +42,13 @@ class InitAvatarUploadIn(serializers.Serializer):
     content_type = serializers.CharField()
     file_size = serializers.IntegerField()
 
-    def validate_content_type(self, value):
-        if not value.startswith("image/"):
-            raise serializers.ValidationError("Invalid format. File must be an image.")
-        
+    _ALLOWED_CONTENT_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
 
-        if value == "image/svg+xml":
-             raise serializers.ValidationError("SVG images are not allowed for security reasons.")
-             
+    def validate_content_type(self, value):
+        if value not in self._ALLOWED_CONTENT_TYPES:
+            raise serializers.ValidationError(
+                "Unsupported image type. Allowed: JPEG, PNG, GIF, WebP."
+            )
         return value
 
     def validate_file_size(self, value):

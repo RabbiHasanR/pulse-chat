@@ -165,6 +165,7 @@ class VerifyOTPView(APIView):
             )
 
         cache.delete(attempts_key)
+        cache.delete(f"otp_{email}")
 
         try:
             user = ChatUser.objects.get(email=email)
