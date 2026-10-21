@@ -1,7 +1,0 @@
-1. optimize send message
-2. add reply to and is forwared feature
-3. make send message api
-3. align with preapareupload and completedupload.
-4. also when user first connect websocket or in online then need all message which status is sent for this user update status and send all reciver notify delivers message with last deiver message id
-5. also when user send to message with unknown who is not contact or chat list must be send reciver_id, name,avatar url.
-8. write all necessary test for entire system and update old test.

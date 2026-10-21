@@ -9,6 +9,8 @@ Start here. This folder is the **source of truth** for what Pulse Chat does and 
 | Learn real-time WS & presence mechanics | [architecture/realtime.md](architecture/realtime.md) |
 | Inspect cloud media processing pipeline | [architecture/media-pipeline.md](architecture/media-pipeline.md) |
 | Check auth & JWT client binding | [architecture/auth.md](architecture/auth.md) |
+| Deep dive into asynchronous workflows | [architecture/workflows/](architecture/workflows/README.md) |
+| Study distributed systems & caching | [learning/](learning/README.md) |
 | View REST API contract & endpoints | [contracts/rest-api.md](contracts/rest-api.md) |
 | View WebSocket events & wire protocol | [contracts/websocket-events.md](contracts/websocket-events.md) |
 | Understand how a feature must behave | [specs/](specs/README.md) |

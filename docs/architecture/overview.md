@@ -104,4 +104,6 @@ All services read `.env` at the repo root through the `x-app-env` anchor in `doc
 - Realtime, presence, and ticks: [realtime.md](realtime.md)
 - Upload and media processing: [media-pipeline.md](media-pipeline.md)
 - Authentication: [auth.md](auth.md)
+- Asynchronous workflows: [workflows/](workflows/README.md)
+- Learning guides & caching: [../learning/](../learning/README.md)
 - Contracts: [rest-api.md](../contracts/rest-api.md), [websocket-events.md](../contracts/websocket-events.md)
