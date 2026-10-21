@@ -73,3 +73,16 @@ Use the [template](_TEMPLATE.md) or the `spec-write` skill (`.agents/skills/spec
 | [USR-002](users/USR-002-contacts-management.md) | Contacts Management & Presence Subscription | implemented | users |
 | [USR-003](users/USR-003-explore-users.md) | Explore Users Directory | implemented | users |
 | [USR-004](users/USR-004-avatar-upload.md) | User Avatar Upload & Confirmation | implemented | users |
+| [CHAT-001](chats/CHAT-001-send-text-message.md) | Send Text Message | implemented | chats |
+| [CHAT-002](chats/CHAT-002-media-message-upload.md) | Media Message & Direct-to-S3 Upload Pipeline | implemented | chats |
+| [CHAT-003](chats/CHAT-003-forward-message.md) | Bulk Message Forwarding & Zero-Copy S3 Cloning | implemented | chats |
+| [CHAT-004](chats/CHAT-004-chat-list.md) | Conversations Inbox & Unread Summaries | implemented | chats |
+| [CHAT-005](chats/CHAT-005-message-history.md) | Message History & Read Receipt Generation | implemented | chats |
+| [RT-001](realtime/RT-001-websocket-connection.md) | WebSocket Connection & Multi-Device Presence | implemented | realtime |
+| [RT-002](realtime/RT-002-chat-view-and-typing.md) | Active Chat Viewing Tracking & Typing Indicators | implemented | realtime |
+| [RT-003](realtime/RT-003-delivery-read-receipts.md) | Delivery & Read Receipts Notification Engine | implemented | realtime |
+| [MEDIA-001](media/MEDIA-001-image-processing.md) | Asynchronous Image Processing Pipeline | implemented | media |
+| [MEDIA-002](media/MEDIA-002-video-hls-processing.md) | Asynchronous Video HLS Transcoding & Checkpointing | implemented | media |
+| [MEDIA-003](media/MEDIA-003-audio-processing.md) | Asynchronous Audio Transcoding & Waveform Extraction | implemented | media |
+| [MEDIA-004](media/MEDIA-004-file-document-processing.md) | File & Document Attachment Processing | implemented | media |
+| [MEDIA-005](media/MEDIA-005-asset-finalization-and-cleanup.md) | Asset Finalization, Failure Routing & Stuck Sweeping | implemented | media |
