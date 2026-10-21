@@ -15,3 +15,11 @@ Use the [template](_TEMPLATE.md) or the `adr-write` skill. Number sequentially a
 
 | ADR | Title | Status |
 | --- | --- | --- |
+| [0001](0001-spec-driven-development.md) | Adopt Spec-Driven Development & Agent-Agnostic Governance | accepted |
+| [0002](0002-cursor-based-pagination.md) | Enforce Cursor-Based Pagination for All List Endpoints | accepted |
+| [0003](0003-single-websocket-channel-group-per-user.md) | Single WebSocket Channel Group per User (`user_{user_id}`) | accepted |
+| [0004](0004-direct-to-s3-upload-architecture.md) | Direct-to-Cloud (S3) Upload Architecture | accepted |
+| [0005](0005-passwordless-otp-and-client-bound-jwt.md) | Passwordless Email OTP & Client-Bound JWT Authentication | accepted |
+| [0006](0006-denormalized-conversation-unread-counters.md) | Denormalized Conversation Fields and JSON Unread Counters | accepted |
+| [0007](0007-celery-queue-isolation.md) | Celery Queue Isolation and CPU-Bounded Video Workers | accepted |
+| [0008](0008-redis-sets-for-presence-and-viewing.md) | Redis Sets for Real-Time Presence and Active Chat Viewing | accepted |
