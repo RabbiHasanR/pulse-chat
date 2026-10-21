@@ -65,3 +65,11 @@ Use the [template](_TEMPLATE.md) or the `spec-write` skill (`.agents/skills/spec
 
 | ID | Title | Status | Area |
 | --- | --- | --- | --- |
+| [AUTH-001](auth/AUTH-001-user-registration.md) | User Registration | implemented | auth |
+| [AUTH-002](auth/AUTH-002-otp-login.md) | Passwordless OTP Login | implemented | auth |
+| [AUTH-003](auth/AUTH-003-client-bound-jwt.md) | Client-Bound JWT Tokens & Refresh | implemented | auth |
+| [AUTH-004](auth/AUTH-004-user-logout.md) | User Logout & Token Blacklisting | implemented | auth |
+| [USR-001](users/USR-001-user-profile.md) | User Profile | implemented | users |
+| [USR-002](users/USR-002-contacts-management.md) | Contacts Management & Presence Subscription | implemented | users |
+| [USR-003](users/USR-003-explore-users.md) | Explore Users Directory | implemented | users |
+| [USR-004](users/USR-004-avatar-upload.md) | User Avatar Upload & Confirmation | implemented | users |
