@@ -13,7 +13,7 @@ contracts:
 adrs:
   - docs/adr/0001-spec-driven-development.md
   - docs/adr/0005-passwordless-otp-and-client-bound-jwt.md
-last_verified: 2026-10-21
+last_verified: 2026-10-22
 ---
 
 # AUTH-001 — User Registration
@@ -80,7 +80,7 @@ sequenceDiagram
 - Email uniqueness is enforced at database level via unique constraint on `ChatUser.email`.
 
 ## 8. Known deviations
-- BUG-002: `send_templated_email_task` lacks an explicit queue and Celery lacks `task_default_queue`, routing it to unconsumed `celery` queue in docker-compose.
+- None (BUG-002 resolved: `send_templated_email_task` explicitly routed to `'default'` queue).
 
 ## 9. Open questions
 - None.
@@ -88,4 +88,5 @@ sequenceDiagram
 ## 10. Changelog
 | Date | Change | By |
 | --- | --- | --- |
+| 2026-10-22 | Fix BUG-002: route send_templated_email_task to default queue | Antigravity |
 | 2026-10-21 | Initial as-built specification | Antigravity |

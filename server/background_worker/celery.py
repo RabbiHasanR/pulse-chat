@@ -9,6 +9,8 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 app = Celery('core')
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
+app.conf.task_default_queue = 'default'
+
 app.conf.task_queues = (
     Queue('default', Exchange('default'), routing_key='default'),
     Queue('video_queue', Exchange('media'), routing_key='video'),
@@ -18,6 +20,9 @@ app.conf.task_queues = (
 )
 
 app.conf.task_routes = {
+    'background_worker.users.tasks.send_templated_email_task': {'queue': 'default'},
+    'background_worker.chats.tasks.mark_delivered_and_notify_senders': {'queue': 'default'},
+    'background_worker.chats.tasks.cleanup_stuck_assets': {'queue': 'default'},
     'background_worker.chats.tasks.process_video_task': {'queue': 'video_queue'},
     'background_worker.chats.tasks.process_image_task': {'queue': 'image_queue'},
     'background_worker.chats.tasks.process_audio_task': {'queue': 'audio_queue'},

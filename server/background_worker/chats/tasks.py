@@ -42,7 +42,14 @@ def _send_socket_update_directly(user_id, payload):
 # ----------------------------------------------------------------------------
 # 2. MARK DELIVERED (On User Connect)
 # ----------------------------------------------------------------------------
-@shared_task(ignore_result=True, time_limit=10, expires=60)
+@shared_task(
+    queue='default',
+    acks_late=True,
+    soft_time_limit=10,
+    time_limit=15,
+    ignore_result=True,
+    expires=60
+)
 def mark_delivered_and_notify_senders(user_id):
     pending_groups = ChatMessage.objects.filter(
         receiver_id=user_id,

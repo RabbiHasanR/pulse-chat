@@ -14,7 +14,7 @@ contracts:
 adrs:
   - docs/adr/0001-spec-driven-development.md
   - docs/adr/0005-passwordless-otp-and-client-bound-jwt.md
-last_verified: 2026-10-21
+last_verified: 2026-10-22
 ---
 
 # AUTH-002 — Passwordless OTP Login
@@ -85,7 +85,7 @@ sequenceDiagram
 
 ## 8. Known deviations
 - BUG-001: `send-otp` currently includes `"otp": otp` in the JSON response body.
-- BUG-002: Email delivery task lacks an explicit queue and is not consumed in standard docker-compose worker configurations.
+- BUG-002 (Resolved): Email delivery task now explicitly routes to `'default'` queue and Celery sets `task_default_queue = 'default'`.
 
 ## 9. Open questions
 - None.
@@ -93,4 +93,5 @@ sequenceDiagram
 ## 10. Changelog
 | Date | Change | By |
 | --- | --- | --- |
+| 2026-10-22 | Fix BUG-002: route email delivery task to default queue | Antigravity |
 | 2026-10-21 | Initial as-built specification | Antigravity |

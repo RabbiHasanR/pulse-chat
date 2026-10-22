@@ -14,7 +14,7 @@ adrs:
   - docs/adr/0001-spec-driven-development.md
   - docs/adr/0003-single-websocket-channel-group-per-user.md
   - docs/adr/0008-redis-sets-for-presence-and-viewing.md
-last_verified: 2026-10-21
+last_verified: 2026-10-22
 ---
 
 # RT-003 — Delivery & Read Receipts Notification Engine
@@ -88,7 +88,7 @@ sequenceDiagram
 - Direct socket notifications bypass queue delay via `_send_socket_update_directly()`.
 
 ## 8. Known deviations
-- BUG-002: Task lacks explicit queue declaration and is not consumed by default in docker-compose.
+- None (BUG-002 resolved: `mark_delivered_and_notify_senders` explicitly routed to `'default'` queue).
 
 ## 9. Open questions
 - None.
@@ -96,4 +96,5 @@ sequenceDiagram
 ## 10. Changelog
 | Date | Change | By |
 | --- | --- | --- |
+| 2026-10-22 | Fix BUG-002: route mark_delivered_and_notify_senders to default queue | Antigravity |
 | 2026-10-21 | Initial as-built specification | Antigravity |

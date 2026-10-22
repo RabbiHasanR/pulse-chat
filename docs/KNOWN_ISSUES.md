@@ -8,7 +8,7 @@ Bugs, security gaps, and spec deviations found in the current code. Each issue i
 | ID | Sev | Title | Specs | Status |
 | --- | --- | --- | --- | --- |
 | BUG-001 | 🔴 | `send-otp` returns the OTP in the response body | AUTH-002 | open |
-| BUG-002 | 🔴 | Tasks without explicit queue go to unconsumed `celery` queue | RT-003, AUTH-001, AUTH-002 | open |
+| BUG-002 | 🔴 | Tasks without explicit queue go to unconsumed `celery` queue | RT-003, AUTH-001, AUTH-002 | fixed |
 | BUG-003 | 🔴 | Beat schedule uses wrong task name for stuck-asset cleanup | MEDIA-005 | open |
 | BUG-004 | 🔴 | `sign-batch` has no ownership check | CHAT-002 | open |
 | BUG-005 | 🟠 | Message history returns 500 when no conversation exists | CHAT-005 | open |
@@ -31,10 +31,10 @@ Bugs, security gaps, and spec deviations found in the current code. Each issue i
 - **Expected:** The response contains only the email token. The OTP is delivered by email only.
 
 ## BUG-002 — Tasks without explicit queue go to an unconsumed queue
-- **Severity:** 🔴 high · **Status:** open · **Specs:** RT-003, AUTH-001, AUTH-002
-- **Where:** `server/background_worker/celery.py` (no `task_default_queue`); `send_templated_email_task`, `mark_delivered_and_notify_senders` have no `queue=` and no `task_routes` entry.
-- **Problem:** Celery's default queue is named `celery`. docker-compose workers consume only `default`, `image_queue,audio_queue,file_queue`, and `video_queue`, so welcome/OTP emails and delivery receipts are never executed.
-- **Expected:** All tasks are routed to a consumed queue (set `task_default_queue = 'default'` or route explicitly).
+- **Severity:** 🔴 high · **Status:** fixed · **Specs:** RT-003, AUTH-001, AUTH-002
+- **Where:** `server/background_worker/celery.py`; `send_templated_email_task`, `mark_delivered_and_notify_senders`.
+- **Problem:** Celery's default queue was named `celery`. docker-compose workers consume only `default`, `image_queue,audio_queue,file_queue`, and `video_queue`, so welcome/OTP emails and delivery receipts were never executed.
+- **Fix:** Set `app.conf.task_default_queue = 'default'` in `celery.py`, routed `send_templated_email_task`, `mark_delivered_and_notify_senders`, and `cleanup_stuck_assets` explicitly in `task_routes`, and added `queue='default'` to task decorators.
 
 ## BUG-003 — Beat schedule uses the wrong task name
 - **Severity:** 🔴 high · **Status:** open · **Spec:** MEDIA-005

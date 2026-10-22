@@ -6,7 +6,8 @@ from django.conf import settings
 import smtplib
 
 @shared_task(
-    bind=True, 
+    bind=True,
+    queue='default',
     acks_late=True,
     soft_time_limit=15,
     time_limit=20,
