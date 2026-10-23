@@ -31,7 +31,7 @@ Bugs, security gaps, and spec deviations found in the current code. Each issue i
 - **Expected:** The response contains only the email token. The OTP is delivered by email only.
 
 ## BUG-002 — Tasks without explicit queue go to an unconsumed queue
-- **Severity:** 🔴 high · **Status:** fixed · **Specs:** RT-003, AUTH-001, AUTH-002
+- **Severity:** 🔴 high · **Status:** fixed (commit `5053382`, 2026-10-22) · **Specs:** RT-003, AUTH-001, AUTH-002
 - **Where:** `server/background_worker/celery.py`; `send_templated_email_task`, `mark_delivered_and_notify_senders`.
 - **Problem:** Celery's default queue was named `celery`. docker-compose workers consume only `default`, `image_queue,audio_queue,file_queue`, and `video_queue`, so welcome/OTP emails and delivery receipts were never executed.
 - **Fix:** Set `app.conf.task_default_queue = 'default'` in `celery.py`, routed `send_templated_email_task`, `mark_delivered_and_notify_senders`, and `cleanup_stuck_assets` explicitly in `task_routes`, and added `queue='default'` to task decorators.
